@@ -1,7 +1,10 @@
 import datetime as dt
+import json
+from json import JSONDecodeError
+from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, model_validator
 from pwdlib import PasswordHash
@@ -13,7 +16,7 @@ app = FastAPI(
         "회원가입과 HTTP Basic 인증을 사용해 "
         "사용자별 건강 기록을 관리하는 REST API입니다."
     ),
-    version="1.0",
+    version="1.1",
 )
 
 
@@ -21,13 +24,9 @@ app = FastAPI(
 # 1. 보안 설정
 # =========================================================
 
-# pwdlib에서 현재 권장하는 비밀번호 해시 설정을 사용한다.
 password_hash = PasswordHash.recommended()
-
-# HTTP Basic 인증 방식을 사용한다.
 security = HTTPBasic()
 
-# 존재하지 않는 사용자도 비밀번호 검증을 수행하기 위한 더미 해시
 DUMMY_HASH = password_hash.hash(
     "dummy-password-for-timing-protection"
 )
@@ -253,18 +252,203 @@ class DeleteResponse(BaseModel):
     id: int
 
 
+class StatsResponse(BaseModel):
+    """현재 사용자의 건강 기록 통계 응답"""
+
+    count: int = Field(
+        ...,
+        ge=1,
+        description="통계 계산에 사용된 기록 수",
+    )
+
+    average_weight: float = Field(
+        ...,
+        description="평균 몸무게",
+    )
+
+    average_bmi: float = Field(
+        ...,
+        description="평균 BMI",
+    )
+
+    average_systolic: float = Field(
+        ...,
+        description="평균 수축기 혈압",
+    )
+
+    average_diastolic: float = Field(
+        ...,
+        description="평균 이완기 혈압",
+    )
+
+    average_blood_sugar: float = Field(
+        ...,
+        description="평균 공복혈당",
+    )
+
+    min_weight: float = Field(
+        ...,
+        description="최저 몸무게",
+    )
+
+    max_weight: float = Field(
+        ...,
+        description="최고 몸무게",
+    )
+
+    min_bmi: float = Field(
+        ...,
+        description="최저 BMI",
+    )
+
+    max_bmi: float = Field(
+        ...,
+        description="최고 BMI",
+    )
+
+    min_systolic: int = Field(
+        ...,
+        description="최저 수축기 혈압",
+    )
+
+    max_systolic: int = Field(
+        ...,
+        description="최고 수축기 혈압",
+    )
+
+    min_diastolic: int = Field(
+        ...,
+        description="최저 이완기 혈압",
+    )
+
+    max_diastolic: int = Field(
+        ...,
+        description="최고 이완기 혈압",
+    )
+
+    min_blood_sugar: int = Field(
+        ...,
+        description="최저 공복혈당",
+    )
+
+    max_blood_sugar: int = Field(
+        ...,
+        description="최고 공복혈당",
+    )
+
+
 # =========================================================
-# 5. 임시 저장소
+# 5. JSON 파일 저장소
 # =========================================================
 
-# 사용자명과 사용자 정보를 저장한다.
+DATA_FILE = Path(__file__).with_name("data.json")
+
 users: dict[str, UserInDB] = {}
-
-# 서버가 실행되는 동안 건강 기록을 보관한다.
 records: list[RecordResponse] = []
-
-# 새 기록에 부여할 다음 ID
 next_record_id = 1
+
+
+def save_data() -> None:
+    """현재 사용자와 건강 기록을 data.json에 저장한다."""
+
+    data = {
+        "users": {
+            username: user.model_dump(mode="json")
+            for username, user in users.items()
+        },
+        "records": [
+            record.model_dump(mode="json")
+            for record in records
+        ],
+        "next_record_id": next_record_id,
+    }
+
+    temporary_file = DATA_FILE.with_suffix(".tmp")
+
+    try:
+        temporary_file.write_text(
+            json.dumps(
+                data,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary_file.replace(DATA_FILE)
+    except OSError as exc:
+        raise RuntimeError(
+            f"데이터 파일 저장에 실패했습니다: {DATA_FILE}"
+        ) from exc
+
+
+def load_data() -> None:
+    """서버 시작 시 data.json에서 사용자와 기록을 불러온다."""
+
+    global users, records, next_record_id
+
+    if not DATA_FILE.exists():
+        return
+
+    try:
+        raw_data = json.loads(
+            DATA_FILE.read_text(encoding="utf-8")
+        )
+
+        raw_users = raw_data.get("users", {})
+        raw_records = raw_data.get("records", [])
+
+        if not isinstance(raw_users, dict):
+            raise ValueError("users는 객체 형태여야 합니다.")
+
+        if not isinstance(raw_records, list):
+            raise ValueError("records는 배열 형태여야 합니다.")
+
+        loaded_users: dict[str, UserInDB] = {}
+
+        for username, user_data in raw_users.items():
+            normalized_username = str(username).strip().lower()
+            loaded_user = UserInDB.model_validate(user_data)
+
+            loaded_users[normalized_username] = loaded_user.model_copy(
+                update={"username": normalized_username}
+            )
+
+        loaded_records = [
+            RecordResponse.model_validate(record_data)
+            for record_data in raw_records
+        ]
+
+        minimum_next_id = max(
+            (record.id for record in loaded_records),
+            default=0,
+        ) + 1
+
+        saved_next_id = raw_data.get("next_record_id")
+
+        if (
+            isinstance(saved_next_id, int)
+            and saved_next_id >= minimum_next_id
+        ):
+            loaded_next_id = saved_next_id
+        else:
+            loaded_next_id = minimum_next_id
+
+        users = loaded_users
+        records = loaded_records
+        next_record_id = loaded_next_id
+
+    except (
+        OSError,
+        JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise RuntimeError(
+            f"데이터 파일을 불러오지 못했습니다: {DATA_FILE}"
+        ) from exc
+
+
+load_data()
 
 
 # =========================================================
@@ -287,8 +471,6 @@ def authenticate_user(
     user = users.get(normalized_username)
 
     if user is None:
-        # 사용자가 없어도 해시 검증을 수행해
-        # 사용자 존재 여부에 따른 시간 차이를 줄인다.
         password_hash.verify(
             password,
             DUMMY_HASH,
@@ -453,13 +635,7 @@ def find_user_record(
     record_id: int,
     username: str,
 ) -> tuple[int, RecordResponse]:
-    """
-    현재 사용자가 소유한 기록을 찾는다.
-
-    반환값:
-    - 리스트 안에서의 위치
-    - 찾은 건강 기록
-    """
+    """현재 사용자가 소유한 기록을 찾는다."""
 
     for index, record in enumerate(records):
         if (
@@ -468,8 +644,6 @@ def find_user_record(
         ):
             return index, record
 
-    # 기록이 없거나 다른 사용자의 기록이면
-    # 모두 동일하게 404를 반환한다.
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="기록을 찾을 수 없습니다.",
@@ -518,6 +692,7 @@ def register_user(user_input: UserRegister):
     )
 
     users[username] = new_user
+    save_data()
 
     return UserPublic(
         username=new_user.username,
@@ -580,6 +755,7 @@ def create_record(
 
     records.append(new_record)
     next_record_id += 1
+    save_data()
 
     return new_record
 
@@ -646,6 +822,7 @@ def update_record(
     )
 
     records[record_index] = updated_record
+    save_data()
 
     return updated_record
 
@@ -666,8 +843,135 @@ def delete_record(
     )
 
     records.pop(record_index)
+    save_data()
 
     return DeleteResponse(
         message="건강 기록이 삭제되었습니다.",
         id=existing_record.id,
+    )
+
+
+# =========================================================
+# 11. 검색·통계 API
+# =========================================================
+
+@app.get(
+    "/search",
+    response_model=RecordListResponse,
+)
+def search_records(
+    start: dt.date = Query(
+        ...,
+        description="검색 시작일",
+        examples=["2026-07-01"],
+    ),
+    end: dt.date = Query(
+        ...,
+        description="검색 종료일",
+        examples=["2026-07-31"],
+    ),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """현재 사용자의 기록을 날짜 범위로 검색한다."""
+
+    if start > end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="시작일은 종료일보다 늦을 수 없습니다.",
+        )
+
+    search_results = [
+        record
+        for record in records
+        if (
+            record.user == current_user.username
+            and start <= record.date <= end
+        )
+    ]
+
+    search_results.sort(
+        key=lambda record: record.date,
+    )
+
+    return RecordListResponse(
+        count=len(search_results),
+        records=search_results,
+    )
+
+
+@app.get(
+    "/stats",
+    response_model=StatsResponse,
+)
+def read_stats(
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """현재 사용자의 건강 기록 통계를 계산한다."""
+
+    user_records = [
+        record
+        for record in records
+        if record.user == current_user.username
+    ]
+
+    if not user_records:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="통계를 계산할 건강 기록이 없습니다.",
+        )
+
+    count = len(user_records)
+
+    return StatsResponse(
+        count=count,
+        average_weight=round(
+            sum(record.weight for record in user_records) / count,
+            2,
+        ),
+        average_bmi=round(
+            sum(record.bmi for record in user_records) / count,
+            2,
+        ),
+        average_systolic=round(
+            sum(record.systolic for record in user_records) / count,
+            2,
+        ),
+        average_diastolic=round(
+            sum(record.diastolic for record in user_records) / count,
+            2,
+        ),
+        average_blood_sugar=round(
+            sum(record.blood_sugar for record in user_records) / count,
+            2,
+        ),
+        min_weight=min(
+            record.weight for record in user_records
+        ),
+        max_weight=max(
+            record.weight for record in user_records
+        ),
+        min_bmi=min(
+            record.bmi for record in user_records
+        ),
+        max_bmi=max(
+            record.bmi for record in user_records
+        ),
+        min_systolic=min(
+            record.systolic for record in user_records
+        ),
+        max_systolic=max(
+            record.systolic for record in user_records
+        ),
+        min_diastolic=min(
+            record.diastolic for record in user_records
+        ),
+        max_diastolic=max(
+            record.diastolic for record in user_records
+        ),
+        min_blood_sugar=min(
+            record.blood_sugar for record in user_records
+        ),
+        max_blood_sugar=max(
+            record.blood_sugar for record in user_records
+        ),
     )
