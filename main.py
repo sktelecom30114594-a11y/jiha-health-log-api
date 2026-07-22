@@ -1,6 +1,7 @@
 import datetime as dt
-import json
-from json import JSONDecodeError
+import os
+import sqlite3
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from typing import Literal
 
@@ -10,18 +11,104 @@ from pydantic import BaseModel, Field, model_validator
 from pwdlib import PasswordHash
 
 
+# =========================================================
+# 1. SQLite 데이터베이스 설정
+# =========================================================
+
+DEFAULT_DB_PATH = Path(__file__).with_name("health_log.db")
+DB_PATH = Path(
+    os.getenv("HEALTH_LOG_DB_PATH", str(DEFAULT_DB_PATH))
+).expanduser().resolve()
+
+
+def get_db_connection() -> sqlite3.Connection:
+    """SQLite 연결을 만들고 공통 설정을 적용한다."""
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    connection = sqlite3.connect(
+        DB_PATH,
+        timeout=10,
+    )
+    connection.row_factory = sqlite3.Row
+
+    # SQLite는 연결마다 외래키 제약을 활성화해야 한다.
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+
+    return connection
+
+
+def init_database() -> None:
+    """필요한 SQLite 테이블을 생성한다."""
+
+    with closing(get_db_connection()) as connection:
+        with connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    hashed_password TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS health_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    weight REAL NOT NULL,
+                    height REAL NOT NULL,
+                    systolic INTEGER NOT NULL,
+                    diastolic INTEGER NOT NULL,
+                    blood_sugar INTEGER NOT NULL,
+                    steps INTEGER NOT NULL DEFAULT 0,
+                    sleep_hours REAL NOT NULL DEFAULT 0,
+                    memo TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (user_id)
+                        REFERENCES users(id)
+                        ON DELETE CASCADE,
+                    UNIQUE (user_id, date)
+                )
+                """
+            )
+
+
+def utc_now_iso() -> str:
+    """현재 UTC 시각을 ISO 8601 문자열로 반환한다."""
+
+    return dt.datetime.now(
+        dt.timezone.utc
+    ).isoformat(timespec="seconds")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """FastAPI 시작 시 데이터베이스를 준비한다."""
+
+    init_database()
+    yield
+
+
 app = FastAPI(
     title="마이 헬스 로그 API",
     description=(
         "회원가입과 HTTP Basic 인증을 사용해 "
-        "사용자별 건강 기록을 관리하는 REST API입니다."
+        "사용자별 건강 기록을 SQLite에 저장하는 REST API입니다."
     ),
-    version="1.1",
+    version="2.0",
+    lifespan=lifespan,
 )
 
 
 # =========================================================
-# 1. 보안 설정
+# 2. 보안 설정
 # =========================================================
 
 password_hash = PasswordHash.recommended()
@@ -33,7 +120,7 @@ DUMMY_HASH = password_hash.hash(
 
 
 # =========================================================
-# 2. 건강 상태 분류 타입
+# 3. 건강 상태 분류 타입
 # =========================================================
 
 BmiCategory = Literal[
@@ -57,7 +144,7 @@ BloodSugarCategory = Literal[
 
 
 # =========================================================
-# 3. 사용자 데이터 모델
+# 4. 사용자 데이터 모델
 # =========================================================
 
 class UserRegister(BaseModel):
@@ -91,8 +178,9 @@ class UserPublic(BaseModel):
 
 
 class UserInDB(BaseModel):
-    """서버 내부에서 보관하는 사용자 정보"""
+    """서버 내부에서 사용하는 사용자 정보"""
 
+    id: int = Field(..., ge=1)
     username: str
     hashed_password: str
 
@@ -105,7 +193,7 @@ class LoginResponse(BaseModel):
 
 
 # =========================================================
-# 4. 건강 기록 데이터 모델
+# 5. 건강 기록 데이터 모델
 # =========================================================
 
 class RecordBase(BaseModel):
@@ -338,121 +426,7 @@ class StatsResponse(BaseModel):
 
 
 # =========================================================
-# 5. JSON 파일 저장소
-# =========================================================
-
-DATA_FILE = Path(__file__).with_name("data.json")
-
-users: dict[str, UserInDB] = {}
-records: list[RecordResponse] = []
-next_record_id = 1
-
-
-def save_data() -> None:
-    """현재 사용자와 건강 기록을 data.json에 저장한다."""
-
-    data = {
-        "users": {
-            username: user.model_dump(mode="json")
-            for username, user in users.items()
-        },
-        "records": [
-            record.model_dump(mode="json")
-            for record in records
-        ],
-        "next_record_id": next_record_id,
-    }
-
-    temporary_file = DATA_FILE.with_suffix(".tmp")
-
-    try:
-        temporary_file.write_text(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        temporary_file.replace(DATA_FILE)
-    except OSError as exc:
-        raise RuntimeError(
-            f"데이터 파일 저장에 실패했습니다: {DATA_FILE}"
-        ) from exc
-
-
-def load_data() -> None:
-    """서버 시작 시 data.json에서 사용자와 기록을 불러온다."""
-
-    global users, records, next_record_id
-
-    if not DATA_FILE.exists():
-        return
-
-    try:
-        raw_data = json.loads(
-            DATA_FILE.read_text(encoding="utf-8")
-        )
-
-        raw_users = raw_data.get("users", {})
-        raw_records = raw_data.get("records", [])
-
-        if not isinstance(raw_users, dict):
-            raise ValueError("users는 객체 형태여야 합니다.")
-
-        if not isinstance(raw_records, list):
-            raise ValueError("records는 배열 형태여야 합니다.")
-
-        loaded_users: dict[str, UserInDB] = {}
-
-        for username, user_data in raw_users.items():
-            normalized_username = str(username).strip().lower()
-            loaded_user = UserInDB.model_validate(user_data)
-
-            loaded_users[normalized_username] = loaded_user.model_copy(
-                update={"username": normalized_username}
-            )
-
-        loaded_records = [
-            RecordResponse.model_validate(record_data)
-            for record_data in raw_records
-        ]
-
-        minimum_next_id = max(
-            (record.id for record in loaded_records),
-            default=0,
-        ) + 1
-
-        saved_next_id = raw_data.get("next_record_id")
-
-        if (
-            isinstance(saved_next_id, int)
-            and saved_next_id >= minimum_next_id
-        ):
-            loaded_next_id = saved_next_id
-        else:
-            loaded_next_id = minimum_next_id
-
-        users = loaded_users
-        records = loaded_records
-        next_record_id = loaded_next_id
-
-    except (
-        OSError,
-        JSONDecodeError,
-        TypeError,
-        ValueError,
-    ) as exc:
-        raise RuntimeError(
-            f"데이터 파일을 불러오지 못했습니다: {DATA_FILE}"
-        ) from exc
-
-
-load_data()
-
-
-# =========================================================
-# 6. 사용자 인증 함수
+# 6. 사용자 조회 및 인증 함수
 # =========================================================
 
 def normalize_username(username: str) -> str:
@@ -461,14 +435,38 @@ def normalize_username(username: str) -> str:
     return username.strip().lower()
 
 
+def get_user_by_username(username: str) -> UserInDB | None:
+    """사용자명으로 SQLite 사용자 정보를 조회한다."""
+
+    normalized_username = normalize_username(username)
+
+    with closing(get_db_connection()) as connection:
+        row = connection.execute(
+            """
+            SELECT id, username, hashed_password
+            FROM users
+            WHERE username = ?
+            """,
+            (normalized_username,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return UserInDB(
+        id=row["id"],
+        username=row["username"],
+        hashed_password=row["hashed_password"],
+    )
+
+
 def authenticate_user(
     username: str,
     password: str,
 ) -> UserInDB | None:
     """사용자명과 비밀번호를 검증한다."""
 
-    normalized_username = normalize_username(username)
-    user = users.get(normalized_username)
+    user = get_user_by_username(username)
 
     if user is None:
         password_hash.verify(
@@ -511,7 +509,7 @@ def get_current_user(
 
 
 # =========================================================
-# 7. 건강 분석 함수
+# 7. 건강 분석 및 응답 변환 함수
 # =========================================================
 
 def calculate_bmi(weight: float, height: float) -> float:
@@ -542,7 +540,7 @@ def classify_blood_pressure(
     systolic: int,
     diastolic: int,
 ) -> BloodPressureCategory:
-    """수축기와 이완기 혈압을 이용해 혈압 상태를 분류한다."""
+    """수축기와 이완기 혈압으로 혈압 상태를 분류한다."""
 
     if systolic >= 140 or diastolic >= 90:
         return "고혈압"
@@ -595,7 +593,7 @@ def build_record(
     record_id: int,
     username: str,
 ) -> RecordResponse:
-    """입력된 건강 수치를 분석해 완성된 기록을 만든다."""
+    """원본 건강 수치로 파생값을 계산해 응답을 만든다."""
 
     bmi = calculate_bmi(
         weight=record_input.weight,
@@ -631,22 +629,76 @@ def build_record(
     )
 
 
-def find_user_record(
-    record_id: int,
+def row_to_record_response(
+    row: sqlite3.Row,
     username: str,
-) -> tuple[int, RecordResponse]:
-    """현재 사용자가 소유한 기록을 찾는다."""
+) -> RecordResponse:
+    """SQLite 행을 검증된 RecordResponse로 변환한다."""
 
-    for index, record in enumerate(records):
-        if (
-            record.id == record_id
-            and record.user == username
-        ):
-            return index, record
+    record_input = RecordInput(
+        date=dt.date.fromisoformat(row["date"]),
+        weight=row["weight"],
+        height=row["height"],
+        systolic=row["systolic"],
+        diastolic=row["diastolic"],
+        blood_sugar=row["blood_sugar"],
+        steps=row["steps"],
+        sleep_hours=row["sleep_hours"],
+        memo=row["memo"],
+    )
 
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="기록을 찾을 수 없습니다.",
+    return build_record(
+        record_input=record_input,
+        record_id=row["id"],
+        username=username,
+    )
+
+
+def get_user_record_row(
+    record_id: int,
+    user_id: int,
+) -> sqlite3.Row:
+    """현재 사용자가 소유한 기록 한 건을 조회한다."""
+
+    with closing(get_db_connection()) as connection:
+        row = connection.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                date,
+                weight,
+                height,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours,
+                memo
+            FROM health_records
+            WHERE id = ? AND user_id = ?
+            """,
+            (record_id, user_id),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="기록을 찾을 수 없습니다.",
+        )
+
+    return row
+
+
+def duplicate_date_exception() -> HTTPException:
+    """동일 날짜 기록 충돌 응답을 만든다."""
+
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "해당 날짜의 건강 기록이 이미 존재합니다. "
+            "기존 기록을 수정하려면 PUT 요청을 사용해주세요."
+        ),
     )
 
 
@@ -672,30 +724,40 @@ def read_root():
     status_code=status.HTTP_201_CREATED,
 )
 def register_user(user_input: UserRegister):
-    """새로운 사용자를 등록한다."""
+    """새로운 사용자를 SQLite에 등록한다."""
 
     username = normalize_username(user_input.username)
-
-    if username in users:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="이미 사용 중인 사용자명입니다.",
-        )
-
     hashed_password = password_hash.hash(
         user_input.password,
     )
+    created_at = utc_now_iso()
 
-    new_user = UserInDB(
-        username=username,
-        hashed_password=hashed_password,
-    )
-
-    users[username] = new_user
-    save_data()
+    try:
+        with closing(get_db_connection()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO users (
+                        username,
+                        hashed_password,
+                        created_at
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        username,
+                        hashed_password,
+                        created_at,
+                    ),
+                )
+    except sqlite3.IntegrityError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이미 사용 중인 사용자명입니다.",
+        ) from error
 
     return UserPublic(
-        username=new_user.username,
+        username=username,
     )
 
 
@@ -731,7 +793,7 @@ def read_current_user(
 
 
 # =========================================================
-# 10. 건강 기록 API
+# 10. 건강 기록 CRUD API
 # =========================================================
 
 @app.post(
@@ -745,19 +807,59 @@ def create_record(
 ):
     """현재 사용자의 새로운 건강 기록을 추가한다."""
 
-    global next_record_id
+    timestamp = utc_now_iso()
 
-    new_record = build_record(
+    try:
+        with closing(get_db_connection()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO health_records (
+                        user_id,
+                        date,
+                        weight,
+                        height,
+                        systolic,
+                        diastolic,
+                        blood_sugar,
+                        steps,
+                        sleep_hours,
+                        memo,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        current_user.id,
+                        record_input.date.isoformat(),
+                        record_input.weight,
+                        record_input.height,
+                        record_input.systolic,
+                        record_input.diastolic,
+                        record_input.blood_sugar,
+                        record_input.steps,
+                        record_input.sleep_hours,
+                        record_input.memo,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+                record_id = cursor.lastrowid
+    except sqlite3.IntegrityError as error:
+        raise duplicate_date_exception() from error
+
+    if record_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="기록 ID를 생성하지 못했습니다.",
+        )
+
+    return build_record(
         record_input=record_input,
-        record_id=next_record_id,
+        record_id=record_id,
         username=current_user.username,
     )
-
-    records.append(new_record)
-    next_record_id += 1
-    save_data()
-
-    return new_record
 
 
 @app.get(
@@ -769,10 +871,34 @@ def read_records(
 ):
     """현재 사용자가 소유한 모든 건강 기록을 조회한다."""
 
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                date,
+                weight,
+                height,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours,
+                memo
+            FROM health_records
+            WHERE user_id = ?
+            ORDER BY date ASC, id ASC
+            """,
+            (current_user.id,),
+        ).fetchall()
+
     user_records = [
-        record
-        for record in records
-        if record.user == current_user.username
+        row_to_record_response(
+            row=row,
+            username=current_user.username,
+        )
+        for row in rows
     ]
 
     return RecordListResponse(
@@ -791,12 +917,15 @@ def read_record(
 ):
     """현재 사용자가 소유한 건강 기록 한 건을 조회한다."""
 
-    _, record = find_user_record(
+    row = get_user_record_row(
         record_id=record_id,
-        username=current_user.username,
+        user_id=current_user.id,
     )
 
-    return record
+    return row_to_record_response(
+        row=row,
+        username=current_user.username,
+    )
 
 
 @app.put(
@@ -810,21 +939,65 @@ def update_record(
 ):
     """현재 사용자가 소유한 건강 기록을 수정한다."""
 
-    record_index, existing_record = find_user_record(
+    timestamp = utc_now_iso()
+
+    try:
+        with closing(get_db_connection()) as connection:
+            existing_row = connection.execute(
+                """
+                SELECT id
+                FROM health_records
+                WHERE id = ? AND user_id = ?
+                """,
+                (record_id, current_user.id),
+            ).fetchone()
+
+            if existing_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="기록을 찾을 수 없습니다.",
+                )
+
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE health_records
+                    SET
+                        date = ?,
+                        weight = ?,
+                        height = ?,
+                        systolic = ?,
+                        diastolic = ?,
+                        blood_sugar = ?,
+                        steps = ?,
+                        sleep_hours = ?,
+                        memo = ?,
+                        updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        record_input.date.isoformat(),
+                        record_input.weight,
+                        record_input.height,
+                        record_input.systolic,
+                        record_input.diastolic,
+                        record_input.blood_sugar,
+                        record_input.steps,
+                        record_input.sleep_hours,
+                        record_input.memo,
+                        timestamp,
+                        record_id,
+                        current_user.id,
+                    ),
+                )
+    except sqlite3.IntegrityError as error:
+        raise duplicate_date_exception() from error
+
+    return build_record(
+        record_input=record_input,
         record_id=record_id,
         username=current_user.username,
     )
-
-    updated_record = build_record(
-        record_input=record_input,
-        record_id=existing_record.id,
-        username=current_user.username,
-    )
-
-    records[record_index] = updated_record
-    save_data()
-
-    return updated_record
 
 
 @app.delete(
@@ -837,17 +1010,27 @@ def delete_record(
 ):
     """현재 사용자가 소유한 건강 기록을 삭제한다."""
 
-    record_index, existing_record = find_user_record(
-        record_id=record_id,
-        username=current_user.username,
-    )
+    with closing(get_db_connection()) as connection:
+        with connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM health_records
+                WHERE id = ? AND user_id = ?
+                """,
+                (record_id, current_user.id),
+            )
 
-    records.pop(record_index)
-    save_data()
+        deleted_count = cursor.rowcount
+
+    if deleted_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="기록을 찾을 수 없습니다.",
+        )
 
     return DeleteResponse(
         message="건강 기록이 삭제되었습니다.",
-        id=existing_record.id,
+        id=record_id,
     )
 
 
@@ -880,18 +1063,41 @@ def search_records(
             detail="시작일은 종료일보다 늦을 수 없습니다.",
         )
 
-    search_results = [
-        record
-        for record in records
-        if (
-            record.user == current_user.username
-            and start <= record.date <= end
-        )
-    ]
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                date,
+                weight,
+                height,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours,
+                memo
+            FROM health_records
+            WHERE
+                user_id = ?
+                AND date BETWEEN ? AND ?
+            ORDER BY date ASC, id ASC
+            """,
+            (
+                current_user.id,
+                start.isoformat(),
+                end.isoformat(),
+            ),
+        ).fetchall()
 
-    search_results.sort(
-        key=lambda record: record.date,
-    )
+    search_results = [
+        row_to_record_response(
+            row=row,
+            username=current_user.username,
+        )
+        for row in rows
+    ]
 
     return RecordListResponse(
         count=len(search_results),
@@ -906,19 +1112,43 @@ def search_records(
 def read_stats(
     current_user: UserInDB = Depends(get_current_user),
 ):
-    """현재 사용자의 건강 기록 통계를 계산한다."""
+    """현재 사용자의 전체 건강 기록 통계를 계산한다."""
 
-    user_records = [
-        record
-        for record in records
-        if record.user == current_user.username
-    ]
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                date,
+                weight,
+                height,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours,
+                memo
+            FROM health_records
+            WHERE user_id = ?
+            ORDER BY date ASC, id ASC
+            """,
+            (current_user.id,),
+        ).fetchall()
 
-    if not user_records:
+    if not rows:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="통계를 계산할 건강 기록이 없습니다.",
         )
+
+    user_records = [
+        row_to_record_response(
+            row=row,
+            username=current_user.username,
+        )
+        for row in rows
+    ]
 
     count = len(user_records)
 
