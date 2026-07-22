@@ -1,0 +1,16 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jiha-health-log-api
+    ports:
+      - "8000:8000"
+    environment:
+      HEALTH_LOG_DB_PATH: /app/data/health_log.db
+    volumes:
+      - health_log_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  health_log_data:
