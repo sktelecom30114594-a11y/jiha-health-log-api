@@ -425,6 +425,69 @@ class StatsResponse(BaseModel):
     )
 
 
+class WeeklyPeriodStats(BaseModel):
+    """주간 리포트의 한 기간에 대한 평균 통계"""
+
+    start_date: dt.date
+    end_date: dt.date
+
+    record_count: int = Field(
+        ...,
+        ge=0,
+        description="해당 기간의 기록 수",
+    )
+
+    average_weight: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 몸무게",
+    )
+
+    average_systolic: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 수축기 혈압",
+    )
+
+    average_diastolic: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 이완기 혈압",
+    )
+
+    average_blood_sugar: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 공복혈당",
+    )
+
+    average_steps: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 걸음 수",
+    )
+
+    average_sleep_hours: float | None = Field(
+        default=None,
+        description="해당 기간의 평균 수면 시간",
+    )
+
+
+class WeeklyChanges(BaseModel):
+    """현재 7일 평균에서 직전 7일 평균을 뺀 변화량"""
+
+    weight: float
+    systolic: float
+    diastolic: float
+    blood_sugar: float
+    steps: float
+    sleep_hours: float
+
+
+class WeeklyReportResponse(BaseModel):
+    """최근 7일과 직전 7일을 비교한 주간 리포트"""
+
+    current_period: WeeklyPeriodStats
+    previous_period: WeeklyPeriodStats
+    changes: WeeklyChanges | None
+    summary: list[str]
+
+
 # =========================================================
 # 6. 사용자 조회 및 인증 함수
 # =========================================================
@@ -702,6 +765,133 @@ def duplicate_date_exception() -> HTTPException:
     )
 
 
+def calculate_weekly_period_stats(
+    rows: list[sqlite3.Row],
+    start_date: dt.date,
+    end_date: dt.date,
+) -> WeeklyPeriodStats:
+    """조회된 기록으로 한 기간의 평균값을 계산한다."""
+
+    record_count = len(rows)
+
+    if record_count == 0:
+        return WeeklyPeriodStats(
+            start_date=start_date,
+            end_date=end_date,
+            record_count=0,
+        )
+
+    return WeeklyPeriodStats(
+        start_date=start_date,
+        end_date=end_date,
+        record_count=record_count,
+        average_weight=round(
+            sum(row["weight"] for row in rows) / record_count,
+            2,
+        ),
+        average_systolic=round(
+            sum(row["systolic"] for row in rows) / record_count,
+            2,
+        ),
+        average_diastolic=round(
+            sum(row["diastolic"] for row in rows) / record_count,
+            2,
+        ),
+        average_blood_sugar=round(
+            sum(row["blood_sugar"] for row in rows) / record_count,
+            2,
+        ),
+        average_steps=round(
+            sum(row["steps"] for row in rows) / record_count,
+            2,
+        ),
+        average_sleep_hours=round(
+            sum(row["sleep_hours"] for row in rows) / record_count,
+            2,
+        ),
+    )
+
+
+def format_change_value(
+    value: float,
+    unit: str,
+) -> str:
+    """변화량을 요약 문장에 사용할 문자열로 변환한다."""
+
+    absolute_value = abs(value)
+
+    if absolute_value.is_integer():
+        number = f"{int(absolute_value):,}"
+    else:
+        number = f"{absolute_value:,.2f}".rstrip("0").rstrip(".")
+
+    return f"{number}{unit}"
+
+
+def describe_weekly_change(
+    label: str,
+    value: float,
+    unit: str,
+) -> str:
+    """증감값 하나를 의학적 판단 없이 사실 문장으로 만든다."""
+
+    if value > 0:
+        direction = "증가"
+    elif value < 0:
+        direction = "감소"
+    else:
+        return f"평균 {label}은 직전 기간과 같습니다."
+
+    formatted_value = format_change_value(
+        value=value,
+        unit=unit,
+    )
+
+    return (
+        f"평균 {label}이 직전 기간보다 "
+        f"{formatted_value} {direction}했습니다."
+    )
+
+
+def build_weekly_summary(
+    changes: WeeklyChanges,
+) -> list[str]:
+    """주간 변화량을 수치 중심의 요약 문장으로 변환한다."""
+
+    return [
+        describe_weekly_change(
+            label="체중",
+            value=changes.weight,
+            unit="kg",
+        ),
+        describe_weekly_change(
+            label="수축기 혈압",
+            value=changes.systolic,
+            unit="mmHg",
+        ),
+        describe_weekly_change(
+            label="이완기 혈압",
+            value=changes.diastolic,
+            unit="mmHg",
+        ),
+        describe_weekly_change(
+            label="공복혈당",
+            value=changes.blood_sugar,
+            unit="mg/dL",
+        ),
+        describe_weekly_change(
+            label="걸음 수",
+            value=changes.steps,
+            unit="보",
+        ),
+        describe_weekly_change(
+            label="수면 시간",
+            value=changes.sleep_hours,
+            unit="시간",
+        ),
+    ]
+
+
 # =========================================================
 # 8. 기본 API
 # =========================================================
@@ -867,30 +1057,53 @@ def create_record(
     response_model=RecordListResponse,
 )
 def read_records(
+    limit: int | None = Query(
+        default=None,
+        ge=1,
+        le=100,
+        description=(
+            "반환할 최대 기록 수입니다. "
+            "입력하지 않으면 전체 기록을 반환합니다."
+        ),
+    ),
+    order: Literal["asc", "desc"] = Query(
+        default="asc",
+        description="날짜 정렬 순서",
+    ),
     current_user: UserInDB = Depends(get_current_user),
 ):
-    """현재 사용자가 소유한 모든 건강 기록을 조회한다."""
+    """현재 사용자의 건강 기록을 선택한 순서와 개수로 조회한다."""
+
+    order_keyword = "ASC" if order == "asc" else "DESC"
+
+    query = f"""
+        SELECT
+            id,
+            user_id,
+            date,
+            weight,
+            height,
+            systolic,
+            diastolic,
+            blood_sugar,
+            steps,
+            sleep_hours,
+            memo
+        FROM health_records
+        WHERE user_id = ?
+        ORDER BY date {order_keyword}, id {order_keyword}
+    """
+
+    parameters: list[int] = [current_user.id]
+
+    if limit is not None:
+        query += "\nLIMIT ?"
+        parameters.append(limit)
 
     with closing(get_db_connection()) as connection:
         rows = connection.execute(
-            """
-            SELECT
-                id,
-                user_id,
-                date,
-                weight,
-                height,
-                systolic,
-                diastolic,
-                blood_sugar,
-                steps,
-                sleep_hours,
-                memo
-            FROM health_records
-            WHERE user_id = ?
-            ORDER BY date ASC, id ASC
-            """,
-            (current_user.id,),
+            query,
+            parameters,
         ).fetchall()
 
     user_records = [
@@ -1035,7 +1248,7 @@ def delete_record(
 
 
 # =========================================================
-# 11. 검색·통계 API
+# 11. 검색·통계·리포트 API
 # =========================================================
 
 @app.get(
@@ -1205,3 +1418,154 @@ def read_stats(
             record.blood_sugar for record in user_records
         ),
     )
+
+
+@app.get(
+    "/reports/weekly",
+    response_model=WeeklyReportResponse,
+)
+def read_weekly_report(
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """가장 최근 기록일을 기준으로 최근 7일과 직전 7일을 비교한다."""
+
+    with closing(get_db_connection()) as connection:
+        latest_date_value = connection.execute(
+            """
+            SELECT MAX(date)
+            FROM health_records
+            WHERE user_id = ?
+            """,
+            (current_user.id,),
+        ).fetchone()[0]
+
+        if latest_date_value is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="주간 리포트를 생성할 건강 기록이 없습니다.",
+            )
+
+        current_end = dt.date.fromisoformat(
+            latest_date_value
+        )
+        current_start = current_end - dt.timedelta(days=6)
+        previous_end = current_start - dt.timedelta(days=1)
+        previous_start = previous_end - dt.timedelta(days=6)
+
+        rows = connection.execute(
+            """
+            SELECT
+                date,
+                weight,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours
+            FROM health_records
+            WHERE
+                user_id = ?
+                AND date BETWEEN ? AND ?
+            ORDER BY date ASC, id ASC
+            """,
+            (
+                current_user.id,
+                previous_start.isoformat(),
+                current_end.isoformat(),
+            ),
+        ).fetchall()
+
+    current_rows: list[sqlite3.Row] = []
+    previous_rows: list[sqlite3.Row] = []
+
+    for row in rows:
+        record_date = dt.date.fromisoformat(row["date"])
+
+        if current_start <= record_date <= current_end:
+            current_rows.append(row)
+        elif previous_start <= record_date <= previous_end:
+            previous_rows.append(row)
+
+    current_period = calculate_weekly_period_stats(
+        rows=current_rows,
+        start_date=current_start,
+        end_date=current_end,
+    )
+    previous_period = calculate_weekly_period_stats(
+        rows=previous_rows,
+        start_date=previous_start,
+        end_date=previous_end,
+    )
+
+    if previous_period.record_count == 0:
+        return WeeklyReportResponse(
+            current_period=current_period,
+            previous_period=previous_period,
+            changes=None,
+            summary=[
+                (
+                    "비교할 이전 기록이 없어 "
+                    "증감을 계산할 수 없습니다."
+                )
+            ],
+        )
+
+    if (
+        current_period.average_weight is None
+        or current_period.average_systolic is None
+        or current_period.average_diastolic is None
+        or current_period.average_blood_sugar is None
+        or current_period.average_steps is None
+        or current_period.average_sleep_hours is None
+        or previous_period.average_weight is None
+        or previous_period.average_systolic is None
+        or previous_period.average_diastolic is None
+        or previous_period.average_blood_sugar is None
+        or previous_period.average_steps is None
+        or previous_period.average_sleep_hours is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="주간 리포트 평균값을 계산하지 못했습니다.",
+        )
+
+    changes = WeeklyChanges(
+        weight=round(
+            current_period.average_weight
+            - previous_period.average_weight,
+            2,
+        ),
+        systolic=round(
+            current_period.average_systolic
+            - previous_period.average_systolic,
+            2,
+        ),
+        diastolic=round(
+            current_period.average_diastolic
+            - previous_period.average_diastolic,
+            2,
+        ),
+        blood_sugar=round(
+            current_period.average_blood_sugar
+            - previous_period.average_blood_sugar,
+            2,
+        ),
+        steps=round(
+            current_period.average_steps
+            - previous_period.average_steps,
+            2,
+        ),
+        sleep_hours=round(
+            current_period.average_sleep_hours
+            - previous_period.average_sleep_hours,
+            2,
+        ),
+    )
+
+    return WeeklyReportResponse(
+        current_period=current_period,
+        previous_period=previous_period,
+        changes=changes,
+        summary=build_weekly_summary(changes),
+    )
+

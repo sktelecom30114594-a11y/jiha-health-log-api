@@ -110,6 +110,23 @@ def run_test() -> None:
             )
             assert_status(response, 201, "두 번째 사용자 가입")
 
+            weekly_auth = ("weekly", "weekly123")
+
+            response = client.post(
+                "/users/register",
+                json={
+                    "username": "weekly",
+                    "password": "weekly123",
+                },
+            )
+            assert_status(response, 201, "주간 리포트 사용자 가입")
+
+            response = client.get(
+                "/reports/weekly",
+                auth=weekly_auth,
+            )
+            assert_status(response, 404, "기록 없는 주간 리포트")
+
             response = client.post(
                 "/users/login",
                 auth=("alice", "wrongpass"),
@@ -164,6 +181,31 @@ def run_test() -> None:
             ] == ["2026-07-01", "2026-07-02"]
 
             response = client.get(
+                "/records",
+                auth=alice_auth,
+                params={"limit": 1, "order": "desc"},
+            )
+            assert_status(response, 200, "최신 기록 제한 조회")
+            assert response.json()["count"] == 1
+            assert response.json()["records"][0]["date"] == (
+                "2026-07-02"
+            )
+
+            response = client.get(
+                "/records",
+                auth=alice_auth,
+                params={"limit": 0},
+            )
+            assert_status(response, 422, "잘못된 기록 제한값")
+
+            response = client.get(
+                "/records",
+                auth=alice_auth,
+                params={"order": "newest"},
+            )
+            assert_status(response, 422, "잘못된 정렬값")
+
+            response = client.get(
                 f"/records/{first_id}",
                 auth=bob_auth,
             )
@@ -210,6 +252,136 @@ def run_test() -> None:
             assert_status(response, 200, "통계")
             assert response.json()["count"] == 2
             assert response.json()["average_weight"] == 60.75
+
+            response = client.post(
+                "/records",
+                auth=weekly_auth,
+                json=record_payload(
+                    "2026-07-14",
+                    weight=66.0,
+                    systolic=120,
+                    diastolic=78,
+                    blood_sugar=100,
+                    steps=8000,
+                    sleep_hours=7.0,
+                ),
+            )
+            assert_status(response, 201, "주간 현재 기간 첫 기록")
+
+            response = client.get(
+                "/reports/weekly",
+                auth=weekly_auth,
+            )
+            assert_status(response, 200, "이전 기록 없는 주간 리포트")
+            report = response.json()
+            assert report["current_period"]["record_count"] == 1
+            assert report["previous_period"]["record_count"] == 0
+            assert report["changes"] is None
+            assert report["summary"] == [
+                (
+                    "비교할 이전 기록이 없어 "
+                    "증감을 계산할 수 없습니다."
+                )
+            ]
+
+            response = client.post(
+                "/records",
+                auth=weekly_auth,
+                json=record_payload(
+                    "2026-07-10",
+                    weight=67.0,
+                    systolic=122,
+                    diastolic=79,
+                    blood_sugar=102,
+                    steps=7000,
+                    sleep_hours=6.8,
+                ),
+            )
+            assert_status(response, 201, "주간 현재 기간 두 번째 기록")
+
+            response = client.post(
+                "/records",
+                auth=weekly_auth,
+                json=record_payload(
+                    "2026-07-01",
+                    weight=70.0,
+                    systolic=130,
+                    diastolic=85,
+                    blood_sugar=110,
+                    steps=5000,
+                    sleep_hours=6.0,
+                ),
+            )
+            assert_status(response, 201, "주간 이전 기간 첫 기록")
+
+            response = client.post(
+                "/records",
+                auth=weekly_auth,
+                json=record_payload(
+                    "2026-07-07",
+                    weight=68.0,
+                    systolic=126,
+                    diastolic=82,
+                    blood_sugar=106,
+                    steps=6000,
+                    sleep_hours=6.5,
+                ),
+            )
+            assert_status(response, 201, "주간 이전 기간 두 번째 기록")
+
+            response = client.post(
+                "/records",
+                auth=bob_auth,
+                json=record_payload(
+                    "2026-07-14",
+                    weight=99.0,
+                    systolic=180,
+                    diastolic=100,
+                    blood_sugar=180,
+                    steps=100,
+                    sleep_hours=2.0,
+                ),
+            )
+            assert_status(response, 201, "다른 사용자 비교용 기록")
+
+            response = client.get(
+                "/reports/weekly",
+                auth=weekly_auth,
+            )
+            assert_status(response, 200, "정상 주간 리포트")
+            report = response.json()
+
+            assert report["current_period"] == {
+                "start_date": "2026-07-08",
+                "end_date": "2026-07-14",
+                "record_count": 2,
+                "average_weight": 66.5,
+                "average_systolic": 121.0,
+                "average_diastolic": 78.5,
+                "average_blood_sugar": 101.0,
+                "average_steps": 7500.0,
+                "average_sleep_hours": 6.9,
+            }
+            assert report["previous_period"] == {
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-07",
+                "record_count": 2,
+                "average_weight": 69.0,
+                "average_systolic": 128.0,
+                "average_diastolic": 83.5,
+                "average_blood_sugar": 108.0,
+                "average_steps": 5500.0,
+                "average_sleep_hours": 6.25,
+            }
+            assert report["changes"] == {
+                "weight": -2.5,
+                "systolic": -7.0,
+                "diastolic": -5.0,
+                "blood_sugar": -7.0,
+                "steps": 2000.0,
+                "sleep_hours": 0.65,
+            }
+            assert len(report["summary"]) == 6
 
             response = client.delete(
                 f"/records/{second_id}",
