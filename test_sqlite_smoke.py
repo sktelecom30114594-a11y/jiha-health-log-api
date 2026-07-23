@@ -87,7 +87,57 @@ def run_test() -> None:
 
         module = load_app("health_log_app_first")
 
+        assert module.describe_weekly_change(
+            label="수축기 혈압",
+            value=-2.28,
+            unit="mmHg",
+            digits=0,
+        ) == "평균 수축기 혈압이 직전 기간보다 2mmHg 감소했습니다."
+        assert module.describe_weekly_change(
+            label="이완기 혈압",
+            value=0.43,
+            unit="mmHg",
+            digits=0,
+        ) == "평균 이완기 혈압은 직전 기간과 같습니다."
+        assert module.describe_weekly_change(
+            label="공복혈당",
+            value=-4.4,
+            unit="mg/dL",
+            digits=0,
+        ) == "평균 공복혈당이 직전 기간보다 4mg/dL 감소했습니다."
+        assert module.describe_weekly_change(
+            label="걸음 수",
+            value=772.85,
+            unit="보",
+            subject_particle="가",
+            topic_particle="는",
+            digits=0,
+        ) == "평균 걸음 수가 직전 기간보다 773보 증가했습니다."
+
         with TestClient(module.app) as client:
+            response = client.get("/dashboard")
+            assert_status(response, 200, "대시보드 HTML 응답")
+            assert response.headers["content-type"].startswith(
+                "text/html"
+            )
+            assert "마이 헬스 로그 대시보드" in response.text
+            assert 'id="loginForm"' in response.text
+            assert 'id="recordsBody"' in response.text
+            assert (
+                'formatNumber(current.average_blood_sugar, 0)'
+                in response.text
+            )
+            assert (
+                'setMetricChange("bloodSugarChange", '
+                'changes && changes.blood_sugar, "mg/dL", 0)'
+                in response.text
+            )
+            assert (
+                'setMetricChange("stepsChange", '
+                'changes && changes.steps, "보", 0)'
+                in response.text
+            )
+
             alice_auth = ("Alice", "test1234")
             bob_auth = ("bob", "bobpass12")
 
@@ -382,6 +432,10 @@ def run_test() -> None:
                 "sleep_hours": 0.65,
             }
             assert len(report["summary"]) == 6
+            assert report["summary"][4] == (
+                "평균 걸음 수가 직전 기간보다 "
+                "2,000보 증가했습니다."
+            )
 
             response = client.delete(
                 f"/records/{second_id}",

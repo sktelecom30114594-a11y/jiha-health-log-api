@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, model_validator
 from pwdlib import PasswordHash
@@ -15,7 +16,9 @@ from pwdlib import PasswordHash
 # 1. SQLite 데이터베이스 설정
 # =========================================================
 
-DEFAULT_DB_PATH = Path(__file__).with_name("health_log.db")
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_DB_PATH = BASE_DIR / "health_log.db"
+DASHBOARD_PATH = BASE_DIR / "dashboard.html"
 DB_PATH = Path(
     os.getenv("HEALTH_LOG_DB_PATH", str(DEFAULT_DB_PATH))
 ).expanduser().resolve()
@@ -815,15 +818,20 @@ def calculate_weekly_period_stats(
 def format_change_value(
     value: float,
     unit: str,
+    digits: int = 2,
 ) -> str:
-    """변화량을 요약 문장에 사용할 문자열로 변환한다."""
+    """변화량을 지정한 소수 자릿수로 표시한다."""
 
-    absolute_value = abs(value)
+    rounded_value = round(abs(value), digits)
 
-    if absolute_value.is_integer():
-        number = f"{int(absolute_value):,}"
+    if digits == 0 or float(rounded_value).is_integer():
+        number = f"{int(rounded_value):,}"
     else:
-        number = f"{absolute_value:,.2f}".rstrip("0").rstrip(".")
+        number = (
+            f"{rounded_value:,.{digits}f}"
+            .rstrip("0")
+            .rstrip(".")
+        )
 
     return f"{number}{unit}"
 
@@ -832,23 +840,32 @@ def describe_weekly_change(
     label: str,
     value: float,
     unit: str,
+    subject_particle: str = "이",
+    topic_particle: str = "은",
+    digits: int = 2,
 ) -> str:
     """증감값 하나를 의학적 판단 없이 사실 문장으로 만든다."""
 
-    if value > 0:
+    display_value = round(value, digits)
+
+    if display_value > 0:
         direction = "증가"
-    elif value < 0:
+    elif display_value < 0:
         direction = "감소"
     else:
-        return f"평균 {label}은 직전 기간과 같습니다."
+        return (
+            f"평균 {label}{topic_particle} "
+            "직전 기간과 같습니다."
+        )
 
     formatted_value = format_change_value(
-        value=value,
+        value=display_value,
         unit=unit,
+        digits=digits,
     )
 
     return (
-        f"평균 {label}이 직전 기간보다 "
+        f"평균 {label}{subject_particle} 직전 기간보다 "
         f"{formatted_value} {direction}했습니다."
     )
 
@@ -868,21 +885,27 @@ def build_weekly_summary(
             label="수축기 혈압",
             value=changes.systolic,
             unit="mmHg",
+            digits=0,
         ),
         describe_weekly_change(
             label="이완기 혈압",
             value=changes.diastolic,
             unit="mmHg",
+            digits=0,
         ),
         describe_weekly_change(
             label="공복혈당",
             value=changes.blood_sugar,
             unit="mg/dL",
+            digits=0,
         ),
         describe_weekly_change(
             label="걸음 수",
             value=changes.steps,
             unit="보",
+            subject_particle="가",
+            topic_particle="는",
+            digits=0,
         ),
         describe_weekly_change(
             label="수면 시간",
@@ -902,6 +925,24 @@ def read_root():
         "message": "마이 헬스 로그 API가 실행 중입니다.",
         "status": "running",
     }
+
+
+@app.get(
+    "/dashboard",
+    response_class=HTMLResponse,
+)
+def read_dashboard():
+    """인증 폼과 건강 기록 요약이 포함된 HTML 화면을 반환한다."""
+
+    try:
+        html_content = DASHBOARD_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="대시보드 HTML 파일을 찾을 수 없습니다.",
+        ) from error
+
+    return HTMLResponse(content=html_content)
 
 
 # =========================================================
