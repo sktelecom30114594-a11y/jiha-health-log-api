@@ -123,6 +123,21 @@ def run_test() -> None:
             assert "마이 헬스 로그 대시보드" in response.text
             assert 'id="loginForm"' in response.text
             assert 'id="recordsBody"' in response.text
+            assert 'id="recordsSearchForm"' in response.text
+            assert 'id="startDate"' in response.text
+            assert 'id="endDate"' in response.text
+            assert 'id="sortBy"' in response.text
+            assert 'id="sortOrder"' in response.text
+            assert 'id="bmiCategory"' in response.text
+            assert 'id="bpCategory"' in response.text
+            assert 'id="sugarCategory"' in response.text
+            assert 'id="pageSize"' in response.text
+            assert 'id="searchRecordsButton"' in response.text
+            assert 'id="resetSearchButton"' in response.text
+            assert 'id="previousPageButton"' in response.text
+            assert 'id="nextPageButton"' in response.text
+            assert 'id="paginationInfo"' in response.text
+            assert "/records/explore" in response.text
             assert (
                 'formatNumber(current.average_blood_sugar, 0)'
                 in response.text
@@ -161,6 +176,7 @@ def run_test() -> None:
             assert_status(response, 201, "두 번째 사용자 가입")
 
             weekly_auth = ("weekly", "weekly123")
+            explorer_auth = ("explorer", "explore123")
 
             response = client.post(
                 "/users/register",
@@ -170,6 +186,15 @@ def run_test() -> None:
                 },
             )
             assert_status(response, 201, "주간 리포트 사용자 가입")
+
+            response = client.post(
+                "/users/register",
+                json={
+                    "username": "explorer",
+                    "password": "explore123",
+                },
+            )
+            assert_status(response, 201, "기록 탐색 사용자 가입")
 
             response = client.get(
                 "/reports/weekly",
@@ -254,6 +279,357 @@ def run_test() -> None:
                 params={"order": "newest"},
             )
             assert_status(response, 422, "잘못된 정렬값")
+
+            explorer_records = [
+                record_payload(
+                    "2026-08-01",
+                    weight=60.0,
+                    systolic=125,
+                    diastolic=82,
+                    blood_sugar=105,
+                    steps=1000,
+                    sleep_hours=6.0,
+                ),
+                record_payload(
+                    "2026-08-02",
+                    weight=60.0,
+                    systolic=125,
+                    diastolic=82,
+                    blood_sugar=105,
+                    steps=2000,
+                    sleep_hours=6.5,
+                ),
+                record_payload(
+                    "2026-08-03",
+                    weight=50.0,
+                    systolic=118,
+                    diastolic=76,
+                    blood_sugar=92,
+                    steps=3000,
+                    sleep_hours=7.0,
+                ),
+                record_payload(
+                    "2026-08-04",
+                    weight=50.0,
+                    systolic=120,
+                    diastolic=80,
+                    blood_sugar=99,
+                    steps=4000,
+                    sleep_hours=7.5,
+                ),
+                record_payload(
+                    "2026-08-05",
+                    weight=68.0,
+                    systolic=145,
+                    diastolic=92,
+                    blood_sugar=130,
+                    steps=5000,
+                    sleep_hours=8.0,
+                ),
+                record_payload(
+                    "2026-08-06",
+                    weight=75.0,
+                    systolic=130,
+                    diastolic=85,
+                    blood_sugar=110,
+                    steps=6000,
+                    sleep_hours=8.5,
+                ),
+                record_payload(
+                    "2026-08-07",
+                    weight=50.0,
+                    systolic=118,
+                    diastolic=76,
+                    blood_sugar=92,
+                    steps=7000,
+                    sleep_hours=9.0,
+                ),
+                record_payload(
+                    "2026-08-08",
+                    weight=68.0,
+                    systolic=140,
+                    diastolic=90,
+                    blood_sugar=126,
+                    steps=8000,
+                    sleep_hours=5.5,
+                ),
+                record_payload(
+                    "2026-08-09",
+                    weight=68.0,
+                    systolic=135,
+                    diastolic=88,
+                    blood_sugar=120,
+                    steps=9000,
+                    sleep_hours=6.0,
+                ),
+                record_payload(
+                    "2026-08-10",
+                    weight=75.0,
+                    systolic=150,
+                    diastolic=95,
+                    blood_sugar=140,
+                    steps=10000,
+                    sleep_hours=6.5,
+                ),
+                record_payload(
+                    "2026-08-11",
+                    weight=50.0,
+                    systolic=120,
+                    diastolic=80,
+                    blood_sugar=99,
+                    steps=11000,
+                    sleep_hours=7.0,
+                ),
+                record_payload(
+                    "2026-08-12",
+                    weight=68.0,
+                    systolic=119,
+                    diastolic=79,
+                    blood_sugar=100,
+                    steps=12000,
+                    sleep_hours=7.5,
+                ),
+            ]
+
+            for index, payload in enumerate(explorer_records, start=1):
+                response = client.post(
+                    "/records",
+                    auth=explorer_auth,
+                    json=payload,
+                )
+                assert_status(
+                    response,
+                    201,
+                    f"기록 탐색 테스트 데이터 {index}",
+                )
+
+            response = client.post(
+                "/records",
+                auth=bob_auth,
+                json=record_payload(
+                    "2026-08-12",
+                    weight=99.0,
+                    systolic=180,
+                    diastolic=100,
+                    blood_sugar=180,
+                    steps=100,
+                    sleep_hours=2.0,
+                ),
+            )
+            assert_status(response, 201, "탐색 사용자 격리용 기록")
+
+            response = client.get("/records/explore")
+            assert_status(response, 401, "기록 탐색 인증 필요")
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+            )
+            assert_status(response, 200, "기록 탐색 기본 조회")
+            explore_result = response.json()
+            assert len(explore_result["items"]) == 10
+            assert explore_result["items"][0]["date"] == "2026-08-12"
+            assert explore_result["pagination"] == {
+                "page": 1,
+                "page_size": 10,
+                "total_items": 12,
+                "total_pages": 2,
+                "has_previous": False,
+                "has_next": True,
+            }
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"page": 2},
+            )
+            assert_status(response, 200, "기록 탐색 다음 페이지")
+            explore_result = response.json()
+            assert [
+                item["date"] for item in explore_result["items"]
+            ] == ["2026-08-02", "2026-08-01"]
+            assert explore_result["pagination"]["has_previous"] is True
+            assert explore_result["pagination"]["has_next"] is False
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"page_size": 20},
+            )
+            assert_status(response, 200, "기록 탐색 20건 페이지")
+            assert len(response.json()["items"]) == 12
+            assert response.json()["pagination"]["total_pages"] == 1
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"start_date": "2026-08-10", "page_size": 20},
+            )
+            assert_status(response, 200, "기록 탐색 시작일만 적용")
+            assert response.json()["pagination"]["total_items"] == 3
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"end_date": "2026-08-02", "page_size": 20},
+            )
+            assert_status(response, 200, "기록 탐색 종료일만 적용")
+            assert response.json()["pagination"]["total_items"] == 2
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={
+                    "start_date": "2026-08-04",
+                    "end_date": "2026-08-06",
+                    "page_size": 20,
+                },
+            )
+            assert_status(response, 200, "기록 탐색 날짜 범위")
+            assert [
+                item["date"] for item in response.json()["items"]
+            ] == ["2026-08-06", "2026-08-05", "2026-08-04"]
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-01",
+                },
+            )
+            assert_status(response, 400, "기록 탐색 역전 날짜 범위")
+
+            sort_fields = [
+                "date",
+                "weight",
+                "systolic",
+                "diastolic",
+                "blood_sugar",
+                "steps",
+                "sleep_hours",
+            ]
+            for sort_by in sort_fields:
+                for order in ["asc", "desc"]:
+                    response = client.get(
+                        "/records/explore",
+                        auth=explorer_auth,
+                        params={
+                            "sort_by": sort_by,
+                            "order": order,
+                            "page_size": 20,
+                        },
+                    )
+                    assert_status(
+                        response,
+                        200,
+                        f"기록 탐색 {sort_by} {order} 정렬",
+                    )
+
+                    def expected_sort_key(item):
+                        if sort_by == "date":
+                            return (item["date"],)
+                        return (item[sort_by], item["date"])
+
+                    expected_dates = [
+                        item["date"]
+                        for item in sorted(
+                            explorer_records,
+                            key=expected_sort_key,
+                            reverse=(order == "desc"),
+                        )
+                    ]
+                    actual_dates = [
+                        item["date"]
+                        for item in response.json()["items"]
+                    ]
+                    assert actual_dates == expected_dates
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"bmi_category": "정상"},
+            )
+            assert_status(response, 200, "기록 탐색 BMI 상태 필터")
+            assert response.json()["pagination"]["total_items"] == 2
+            assert [
+                item["date"] for item in response.json()["items"]
+            ] == ["2026-08-02", "2026-08-01"]
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={"bp_category": "주의", "page_size": 20},
+            )
+            assert_status(response, 200, "기록 탐색 혈압 상태 필터")
+            assert response.json()["pagination"]["total_items"] == 6
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={
+                    "sugar_category": "공복혈당장애",
+                    "page_size": 20,
+                },
+            )
+            assert_status(response, 200, "기록 탐색 혈당 상태 필터")
+            assert response.json()["pagination"]["total_items"] == 5
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={
+                    "bmi_category": "정상",
+                    "bp_category": "주의",
+                    "sugar_category": "공복혈당장애",
+                },
+            )
+            assert_status(response, 200, "기록 탐색 상태 AND 필터")
+            assert response.json()["pagination"] == {
+                "page": 1,
+                "page_size": 10,
+                "total_items": 2,
+                "total_pages": 1,
+                "has_previous": False,
+                "has_next": False,
+            }
+
+            response = client.get(
+                "/records/explore",
+                auth=explorer_auth,
+                params={
+                    "start_date": "2027-01-01",
+                    "end_date": "2027-01-31",
+                },
+            )
+            assert_status(response, 200, "기록 탐색 빈 결과")
+            assert response.json() == {
+                "items": [],
+                "pagination": {
+                    "page": 1,
+                    "page_size": 10,
+                    "total_items": 0,
+                    "total_pages": 0,
+                    "has_previous": False,
+                    "has_next": False,
+                },
+            }
+
+            for invalid_params, label in [
+                ({"sort_by": "memo"}, "잘못된 탐색 정렬 기준"),
+                ({"order": "newest"}, "잘못된 탐색 정렬 순서"),
+                ({"page": 0}, "잘못된 탐색 페이지"),
+                ({"page_size": 7}, "잘못된 탐색 페이지 크기"),
+                ({"bmi_category": "매우 정상"}, "잘못된 BMI 필터"),
+                ({"bp_category": "위험"}, "잘못된 혈압 필터"),
+                ({"sugar_category": "주의"}, "잘못된 혈당 필터"),
+            ]:
+                response = client.get(
+                    "/records/explore",
+                    auth=explorer_auth,
+                    params=invalid_params,
+                )
+                assert_status(response, 422, label)
 
             response = client.get(
                 f"/records/{first_id}",

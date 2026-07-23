@@ -37,7 +37,8 @@
     }
 
     button,
-    input {
+    input,
+    select {
       font: inherit;
     }
 
@@ -118,7 +119,8 @@
       font-size: 0.92rem;
     }
 
-    .field input {
+    .field input,
+    .field select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 12px;
@@ -129,7 +131,8 @@
       transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .field input:focus {
+    .field input:focus,
+    .field select:focus {
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(39, 100, 231, 0.13);
     }
@@ -324,6 +327,69 @@
       line-height: 1.45;
     }
 
+    .explore-form {
+      margin-bottom: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      background: var(--surface-soft);
+    }
+
+    .filters-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .filters-grid .field {
+      margin-bottom: 0;
+    }
+
+    .filter-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .filter-actions .primary-button {
+      width: auto;
+    }
+
+    .records-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .records-meta strong {
+      color: var(--text);
+      font-size: 0.96rem;
+    }
+
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .pagination-info {
+      min-width: 118px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.88rem;
+      font-weight: 700;
+    }
+
+    .pagination .ghost-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
     .table-wrap {
       overflow-x: auto;
       border: 1px solid var(--line);
@@ -421,8 +487,17 @@
       }
 
       .metrics-grid,
-      .summary-list {
+      .summary-list,
+      .filters-grid {
         grid-template-columns: 1fr;
+      }
+
+      .filter-actions {
+        justify-content: stretch;
+      }
+
+      .filter-actions button {
+        flex: 1;
       }
     }
   </style>
@@ -525,11 +600,87 @@
       <section class="card section-card" aria-labelledby="recordsTitle">
         <div class="section-head">
           <div>
-            <h3 id="recordsTitle" class="section-title">최근 건강 기록</h3>
-            <p class="section-subtitle">날짜가 최신인 기록을 최대 10건까지 표시합니다.</p>
+            <h3 id="recordsTitle" class="section-title">건강 기록 탐색</h3>
+            <p id="recordsDescription" class="section-subtitle">
+              날짜·상태 조건과 정렬 기준을 선택해 전체 과거 기록을 확인하세요.
+            </p>
           </div>
-          <strong id="recordCount">0건</strong>
+          <div class="records-meta">
+            검색 결과 <strong id="recordCount">0건</strong>
+          </div>
         </div>
+
+        <form id="recordsSearchForm" class="explore-form">
+          <div class="filters-grid">
+            <div class="field">
+              <label for="startDate">시작일</label>
+              <input id="startDate" name="start_date" type="date">
+            </div>
+            <div class="field">
+              <label for="endDate">종료일</label>
+              <input id="endDate" name="end_date" type="date">
+            </div>
+            <div class="field">
+              <label for="sortBy">정렬 기준</label>
+              <select id="sortBy" name="sort_by">
+                <option value="date">날짜</option>
+                <option value="weight">체중</option>
+                <option value="systolic">수축기 혈압</option>
+                <option value="diastolic">이완기 혈압</option>
+                <option value="blood_sugar">공복혈당</option>
+                <option value="steps">걸음 수</option>
+                <option value="sleep_hours">수면 시간</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="sortOrder">정렬 순서</label>
+              <select id="sortOrder" name="order">
+                <option value="desc">높은 값·최신순</option>
+                <option value="asc">낮은 값·오래된순</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="bmiCategory">BMI 상태</label>
+              <select id="bmiCategory" name="bmi_category">
+                <option value="">전체</option>
+                <option value="저체중">저체중</option>
+                <option value="정상">정상</option>
+                <option value="과체중">과체중</option>
+                <option value="비만">비만</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="bpCategory">혈압 상태</label>
+              <select id="bpCategory" name="bp_category">
+                <option value="">전체</option>
+                <option value="정상">정상</option>
+                <option value="주의">주의</option>
+                <option value="고혈압">고혈압</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="sugarCategory">공복혈당 상태</label>
+              <select id="sugarCategory" name="sugar_category">
+                <option value="">전체</option>
+                <option value="정상">정상</option>
+                <option value="공복혈당장애">공복혈당장애</option>
+                <option value="당뇨 의심">당뇨 의심</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="pageSize">페이지당 기록 수</label>
+              <select id="pageSize" name="page_size">
+                <option value="10">10건</option>
+                <option value="20">20건</option>
+                <option value="50">50건</option>
+              </select>
+            </div>
+          </div>
+          <div class="filter-actions">
+            <button id="resetSearchButton" class="ghost-button" type="button">조건 초기화</button>
+            <button id="searchRecordsButton" class="primary-button" type="submit">검색</button>
+          </div>
+        </form>
 
         <div id="recordsTableWrap" class="table-wrap" hidden>
           <table>
@@ -549,6 +700,12 @@
           </table>
         </div>
         <div id="recordsEmpty" class="empty-state">아직 저장된 건강 기록이 없습니다.</div>
+
+        <nav id="recordsPagination" class="pagination" aria-label="건강 기록 페이지 이동" hidden>
+          <button id="previousPageButton" class="ghost-button" type="button">이전</button>
+          <span id="paginationInfo" class="pagination-info">0 / 0페이지</span>
+          <button id="nextPageButton" class="ghost-button" type="button">다음</button>
+        </nav>
       </section>
     </section>
   </main>
@@ -557,6 +714,8 @@
     "use strict";
 
     let authHeader = null;
+    let currentRecordsPage = 1;
+    let currentPagination = null;
 
     const loginSection = document.getElementById("loginSection");
     const loginForm = document.getElementById("loginForm");
@@ -566,6 +725,11 @@
     const dashboardMessage = document.getElementById("dashboardMessage");
     const refreshButton = document.getElementById("refreshButton");
     const logoutButton = document.getElementById("logoutButton");
+    const recordsSearchForm = document.getElementById("recordsSearchForm");
+    const resetSearchButton = document.getElementById("resetSearchButton");
+    const searchRecordsButton = document.getElementById("searchRecordsButton");
+    const previousPageButton = document.getElementById("previousPageButton");
+    const nextPageButton = document.getElementById("nextPageButton");
 
     function toBase64Utf8(value) {
       const bytes = new TextEncoder().encode(value);
@@ -741,18 +905,85 @@
       summaryEmpty.hidden = false;
     }
 
+    function buildRecordsExploreUrl(page) {
+      const params = new URLSearchParams();
+      const values = {
+        start_date: document.getElementById("startDate").value,
+        end_date: document.getElementById("endDate").value,
+        sort_by: document.getElementById("sortBy").value,
+        order: document.getElementById("sortOrder").value,
+        bmi_category: document.getElementById("bmiCategory").value,
+        bp_category: document.getElementById("bpCategory").value,
+        sugar_category: document.getElementById("sugarCategory").value,
+        page_size: document.getElementById("pageSize").value,
+      };
+
+      for (const [key, value] of Object.entries(values)) {
+        if (value) {
+          params.set(key, value);
+        }
+      }
+      params.set("page", String(page));
+
+      return `/records/explore?${params.toString()}`;
+    }
+
+    function resetRecordsSearchForm() {
+      recordsSearchForm.reset();
+      document.getElementById("sortBy").value = "date";
+      document.getElementById("sortOrder").value = "desc";
+      document.getElementById("pageSize").value = "10";
+      currentRecordsPage = 1;
+      currentPagination = null;
+    }
+
+    function renderPagination(pagination) {
+      const paginationElement = document.getElementById("recordsPagination");
+      const paginationInfo = document.getElementById("paginationInfo");
+
+      currentPagination = pagination;
+      currentRecordsPage = pagination.page;
+
+      if (pagination.total_pages === 0) {
+        paginationElement.hidden = true;
+        paginationInfo.textContent = "0 / 0페이지";
+        previousPageButton.disabled = true;
+        nextPageButton.disabled = true;
+        return;
+      }
+
+      paginationElement.hidden = false;
+      paginationInfo.textContent =
+        `${pagination.page} / ${pagination.total_pages}페이지`;
+      previousPageButton.disabled = !pagination.has_previous;
+      nextPageButton.disabled = !pagination.has_next;
+    }
+
     function renderRecords(payload) {
-      const records = payload.records || [];
+      const records = payload.items || [];
+      const pagination = payload.pagination || {
+        page: 1,
+        page_size: 10,
+        total_items: 0,
+        total_pages: 0,
+        has_previous: false,
+        has_next: false,
+      };
       const recordsBody = document.getElementById("recordsBody");
       const tableWrap = document.getElementById("recordsTableWrap");
       const emptyState = document.getElementById("recordsEmpty");
 
       recordsBody.replaceChildren();
-      document.getElementById("recordCount").textContent = `${payload.count || 0}건`;
+      document.getElementById("recordCount").textContent =
+        `${formatNumber(pagination.total_items, 0)}건`;
 
       if (records.length === 0) {
         tableWrap.hidden = true;
+        emptyState.textContent = pagination.total_items === 0
+          ? "검색 조건에 맞는 건강 기록이 없습니다."
+          : "요청한 페이지에 표시할 건강 기록이 없습니다.";
         emptyState.hidden = false;
+        renderPagination(pagination);
         return;
       }
 
@@ -792,16 +1023,23 @@
         row.appendChild(statusCell);
         recordsBody.appendChild(row);
       }
+
+      renderPagination(pagination);
+    }
+
+    async function loadRecords(page = 1) {
+      const payload = await apiFetch(buildRecordsExploreUrl(page));
+      renderRecords(payload);
     }
 
     async function loadDashboardData() {
       dashboard.classList.add("loading");
       refreshButton.disabled = true;
+      searchRecordsButton.disabled = true;
       setMessage(dashboardMessage, "데이터를 불러오는 중입니다.", "info");
 
       try {
-        const records = await apiFetch("/records?limit=10&order=desc");
-        renderRecords(records);
+        await loadRecords(currentRecordsPage);
 
         try {
           const report = await apiFetch("/reports/weekly");
@@ -820,6 +1058,23 @@
       } finally {
         dashboard.classList.remove("loading");
         refreshButton.disabled = false;
+        searchRecordsButton.disabled = false;
+      }
+    }
+
+    async function runRecordsSearch(page = 1) {
+      dashboard.classList.add("loading");
+      searchRecordsButton.disabled = true;
+      setMessage(dashboardMessage, "건강 기록을 검색하는 중입니다.", "info");
+
+      try {
+        await loadRecords(page);
+        setMessage(dashboardMessage);
+      } catch (error) {
+        setMessage(dashboardMessage, error.message, "error");
+      } finally {
+        dashboard.classList.remove("loading");
+        searchRecordsButton.disabled = false;
       }
     }
 
@@ -839,6 +1094,7 @@
         loginSection.hidden = true;
         dashboard.classList.add("is-visible");
         document.getElementById("password").value = "";
+        resetRecordsSearchForm();
         await loadDashboardData();
       } catch (error) {
         authHeader = null;
@@ -849,13 +1105,47 @@
       }
     });
 
+    recordsSearchForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      currentRecordsPage = 1;
+      await runRecordsSearch(1);
+    });
+
+    resetSearchButton.addEventListener("click", async () => {
+      resetRecordsSearchForm();
+      await runRecordsSearch(1);
+    });
+
+    previousPageButton.addEventListener("click", async () => {
+      if (!currentPagination || !currentPagination.has_previous) {
+        return;
+      }
+      await runRecordsSearch(currentRecordsPage - 1);
+    });
+
+    nextPageButton.addEventListener("click", async () => {
+      if (!currentPagination || !currentPagination.has_next) {
+        return;
+      }
+      await runRecordsSearch(currentRecordsPage + 1);
+    });
+
     refreshButton.addEventListener("click", loadDashboardData);
 
     logoutButton.addEventListener("click", () => {
       authHeader = null;
+      currentPagination = null;
+      currentRecordsPage = 1;
       dashboard.classList.remove("is-visible");
       loginSection.hidden = false;
       loginForm.reset();
+      resetRecordsSearchForm();
+      document.getElementById("recordsBody").replaceChildren();
+      document.getElementById("recordsTableWrap").hidden = true;
+      document.getElementById("recordsEmpty").hidden = false;
+      document.getElementById("recordsPagination").hidden = true;
+      document.getElementById("recordCount").textContent = "0건";
+      setMessage(dashboardMessage);
       setMessage(loginMessage, "로그아웃되었습니다.", "info");
       document.getElementById("username").focus();
     });

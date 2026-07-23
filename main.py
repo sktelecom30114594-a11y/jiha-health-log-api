@@ -2,6 +2,7 @@ import datetime as dt
 import os
 import sqlite3
 from contextlib import asynccontextmanager, closing
+from enum import IntEnum
 from pathlib import Path
 from typing import Literal
 
@@ -144,6 +145,14 @@ BloodSugarCategory = Literal[
     "공복혈당장애",
     "당뇨 의심",
 ]
+
+
+class ExplorePageSize(IntEnum):
+    """기록 탐색에서 허용하는 페이지 크기"""
+
+    TEN = 10
+    TWENTY = 20
+    FIFTY = 50
 
 
 # =========================================================
@@ -334,6 +343,24 @@ class RecordListResponse(BaseModel):
     )
 
     records: list[RecordResponse]
+
+
+class PaginationInfo(BaseModel):
+    """기록 탐색 결과의 페이지 정보"""
+
+    page: int = Field(..., ge=1)
+    page_size: int = Field(..., description="페이지당 기록 수")
+    total_items: int = Field(..., ge=0)
+    total_pages: int = Field(..., ge=0)
+    has_previous: bool
+    has_next: bool
+
+
+class RecordExploreResponse(BaseModel):
+    """검색·정렬·필터·페이지네이션이 적용된 기록 탐색 응답"""
+
+    items: list[RecordResponse]
+    pagination: PaginationInfo
 
 
 class DeleteResponse(BaseModel):
@@ -717,6 +744,33 @@ def row_to_record_response(
         record_input=record_input,
         record_id=row["id"],
         username=username,
+    )
+
+
+RecordSortField = Literal[
+    "date",
+    "weight",
+    "systolic",
+    "diastolic",
+    "blood_sugar",
+    "steps",
+    "sleep_hours",
+]
+
+
+def get_record_sort_key(
+    record: RecordResponse,
+    sort_by: RecordSortField,
+):
+    """선택 필드와 날짜·ID를 이용해 결정적인 정렬 키를 만든다."""
+
+    if sort_by == "date":
+        return (record.date, record.id)
+
+    return (
+        getattr(record, sort_by),
+        record.date,
+        record.id,
     )
 
 
@@ -1158,6 +1212,166 @@ def read_records(
     return RecordListResponse(
         count=len(user_records),
         records=user_records,
+    )
+
+
+@app.get(
+    "/records/explore",
+    response_model=RecordExploreResponse,
+)
+def explore_records(
+    start_date: dt.date | None = Query(
+        default=None,
+        description=(
+            "검색 시작일입니다. 입력하지 않으면 "
+            "가장 오래된 기록부터 조회합니다."
+        ),
+        examples=["2026-01-01"],
+    ),
+    end_date: dt.date | None = Query(
+        default=None,
+        description=(
+            "검색 종료일입니다. 입력하지 않으면 "
+            "가장 최근 기록까지 조회합니다."
+        ),
+        examples=["2026-06-30"],
+    ),
+    sort_by: RecordSortField = Query(
+        default="date",
+        description="정렬 기준",
+    ),
+    order: Literal["asc", "desc"] = Query(
+        default="desc",
+        description="정렬 순서",
+    ),
+    bmi_category: BmiCategory | None = Query(
+        default=None,
+        description="BMI 상태 필터",
+    ),
+    bp_category: BloodPressureCategory | None = Query(
+        default=None,
+        description="혈압 상태 필터",
+    ),
+    sugar_category: BloodSugarCategory | None = Query(
+        default=None,
+        description="공복혈당 상태 필터",
+    ),
+    page: int = Query(
+        default=1,
+        ge=1,
+        description="조회할 페이지 번호",
+    ),
+    page_size: ExplorePageSize = Query(
+        default=ExplorePageSize.TEN,
+        description="페이지당 기록 수: 10, 20, 50 중 하나",
+    ),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """현재 사용자의 전체 과거 기록을 조건에 따라 탐색한다."""
+
+    if (
+        start_date is not None
+        and end_date is not None
+        and start_date > end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="시작일은 종료일보다 늦을 수 없습니다.",
+        )
+
+    query = """
+        SELECT
+            id,
+            user_id,
+            date,
+            weight,
+            height,
+            systolic,
+            diastolic,
+            blood_sugar,
+            steps,
+            sleep_hours,
+            memo
+        FROM health_records
+        WHERE user_id = ?
+    """
+    parameters: list[int | str] = [current_user.id]
+
+    if start_date is not None:
+        query += "\nAND date >= ?"
+        parameters.append(start_date.isoformat())
+
+    if end_date is not None:
+        query += "\nAND date <= ?"
+        parameters.append(end_date.isoformat())
+
+    # 상태 필터와 페이지네이션 전에 전체 후보를 결정적으로 조회한다.
+    query += "\nORDER BY date ASC, id ASC"
+
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(
+            query,
+            parameters,
+        ).fetchall()
+
+    filtered_records = [
+        row_to_record_response(
+            row=row,
+            username=current_user.username,
+        )
+        for row in rows
+    ]
+
+    if bmi_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.bmi_category == bmi_category
+        ]
+
+    if bp_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.bp_category == bp_category
+        ]
+
+    if sugar_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.sugar_category == sugar_category
+        ]
+
+    filtered_records.sort(
+        key=lambda record: get_record_sort_key(
+            record=record,
+            sort_by=sort_by,
+        ),
+        reverse=(order == "desc"),
+    )
+
+    page_size_value = int(page_size)
+    total_items = len(filtered_records)
+    total_pages = (
+        (total_items + page_size_value - 1) // page_size_value
+        if total_items > 0
+        else 0
+    )
+    start_index = (page - 1) * page_size_value
+    end_index = start_index + page_size_value
+    page_items = filtered_records[start_index:end_index]
+
+    return RecordExploreResponse(
+        items=page_items,
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size_value,
+            total_items=total_items,
+            total_pages=total_pages,
+            has_previous=(page > 1 and total_pages > 0),
+            has_next=(page < total_pages),
+        ),
     )
 
 
@@ -1609,4 +1823,3 @@ def read_weekly_report(
         changes=changes,
         summary=build_weekly_summary(changes),
     )
-
