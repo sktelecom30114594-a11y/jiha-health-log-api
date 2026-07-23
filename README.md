@@ -7,7 +7,7 @@ FastAPI와 SQLite를 활용해 만든 개인 건강 기록 관리 REST API입니
 
 입력된 건강 수치를 바탕으로 BMI와 건강 상태를 자동 계산하며, 날짜 범위 검색과 전체 통계 기능도 제공합니다.
 
-기본 CRUD 요구사항에 더해 다중 사용자 인증, 사용자별 데이터 분리, SQLite 영구 저장, 자동 테스트, 현실형 합성 데이터, Docker 볼륨 영속성을 선택 확장 기능으로 구현했습니다.
+기본 CRUD 요구사항에 더해 다중 사용자 인증, 사용자별 데이터 분리, SQLite 영구 저장, 자동 테스트, 현실형 합성 데이터, Docker 볼륨 영속성, 주간 리포트, HTML 대시보드를 선택 확장 기능으로 구현했습니다.
 
 ---
 
@@ -24,7 +24,7 @@ FastAPI와 SQLite를 활용해 만든 개인 건강 기록 관리 REST API입니
 ### 건강 기록
 
 - 건강 기록 생성
-- 전체 기록 조회
+- 전체 기록 조회 (개수·정렬 순서 지정 가능)
 - 단건 기록 조회
 - 기록 수정
 - 기록 삭제
@@ -38,6 +38,11 @@ FastAPI와 SQLite를 활용해 만든 개인 건강 기록 관리 REST API입니
 - 혈압 상태 분류
 - 공복혈당 상태 분류
 - 위험 수준에 따른 경고 메시지 생성
+
+### 리포트 · 대시보드
+
+- 최근 7일과 직전 7일을 비교하는 주간 리포트 제공
+- 로그인 후 최근 기록·주간 리포트를 확인할 수 있는 HTML 대시보드 화면 제공
 
 ### 데이터 저장
 
@@ -71,6 +76,7 @@ jiha-health-log-api/
 ├─ main.py
 ├─ seed_year_data.py
 ├─ test_sqlite_smoke.py
+├─ dashboard.html
 ├─ requirements.txt
 ├─ Dockerfile
 ├─ compose.yaml
@@ -86,7 +92,8 @@ jiha-health-log-api/
 |---|---|
 | `main.py` | FastAPI 애플리케이션 본체 |
 | `seed_year_data.py` | 3명의 데모 사용자와 1년치 합성 데이터 생성 |
-| `test_sqlite_smoke.py` | 회원가입·인증·CRUD·검색·통계·영속성 자동 검증 |
+| `test_sqlite_smoke.py` | 회원가입·인증·CRUD·검색·통계·리포트·대시보드·영속성 자동 검증 |
+| `dashboard.html` | 로그인·최근 기록·주간 리포트를 보여주는 읽기 전용 HTML 대시보드 |
 | `Dockerfile` | API Docker 이미지 생성 |
 | `compose.yaml` | API 실행과 SQLite 볼륨 연결 |
 | `PRD_마이_헬스_로그_API_v2.md` | 프로젝트 요구사항 및 데이터 정책 |
@@ -150,6 +157,8 @@ UNIQUE(user_id, date)
 
 이 방식은 건강 분류 기준이 변경되더라도 기존 DB 값과 계산 기준이 불일치하는 문제를 줄일 수 있습니다.
 
+주간 리포트의 평균값과 증감값도 같은 원칙으로, DB에 저장하지 않고 `GET /reports/weekly` 호출 시점에 원본 기록으로부터 매번 다시 계산됩니다.
+
 ---
 
 ## 6. 건강 상태 분류 기준
@@ -202,6 +211,16 @@ BMI = 몸무게(kg) / 키(m)²
 | DELETE | `/records/{record_id}` | 기록 삭제 | 필요 |
 | GET | `/search` | 날짜 범위 검색 | 필요 |
 | GET | `/stats` | 전체 기록 통계 | 필요 |
+| GET | `/reports/weekly` | 최근 7일과 직전 7일을 비교하는 주간 리포트 | 필요 |
+| GET | `/dashboard` | 로그인·최근 기록·주간 리포트를 보여주는 HTML 화면 | 불필요 |
+
+`GET /records`는 `limit`(1~100, 기본값 전체)과 `order`(`asc`/`desc`, 기본값 `asc`) 쿼리 파라미터로 반환 개수와 정렬 순서를 지정할 수 있습니다.
+
+최근 기록 10건을 최신순으로 조회하는 예시:
+
+```text
+GET /records?limit=10&order=desc
+```
 
 Swagger UI:
 
@@ -223,7 +242,7 @@ http://localhost:8000/docs
 |---|---|
 | 400 | 검색 시작일이 종료일보다 늦음 |
 | 401 | 인증 정보가 없거나 계정 정보가 틀림 |
-| 404 | 현재 사용자의 기록이 없거나 통계 대상이 없음 |
+| 404 | 현재 사용자의 기록이 없거나 통계·주간 리포트 대상이 없음 |
 | 409 | 사용자명 중복 또는 동일 날짜 기록 충돌 |
 | 422 | 입력값 형식 또는 범위가 잘못됨 |
 
@@ -271,7 +290,34 @@ Swagger:
 http://127.0.0.1:8000/docs
 ```
 
+대시보드:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
 서버를 처음 실행하면 프로젝트 폴더에 `health_log.db`가 자동 생성됩니다.
+
+### 9.5 데모 데이터 준비 (선택)
+
+대시보드를 바로 확인하려면 데모 사용자와 합성 데이터를 생성합니다. `seed_year_data.py`는 SQLite 데이터베이스에 직접 저장하므로 Uvicorn 서버가 실행 중이지 않아도 사용할 수 있습니다.
+
+```powershell
+python seed_year_data.py
+```
+
+데모 로그인:
+
+```text
+사용자명: demo_stable
+비밀번호: demo1234
+```
+
+이미 데모 데이터가 있는 상태에서 깨끗하게 다시 만들고 싶다면 `--reset` 옵션을 사용하세요. 세 데모 계정과 해당 기록만 초기화하며, 다른 사용자의 데이터는 삭제하지 않습니다.
+
+```powershell
+python seed_year_data.py --reset
+```
 
 ---
 
@@ -358,6 +404,8 @@ SQLite 스모크 테스트: 모든 항목 통과
 - 사용자별 기록 접근 제한
 - 날짜 범위 검색
 - 통계 계산
+- 주간 리포트 계산 (이전 기록 없음 / 있음)
+- `/dashboard` HTML 응답 및 필수 요소 포함 여부
 - 삭제 후 404
 - SQLite 재시작 후 데이터 유지
 - 자동 증가 ID
@@ -368,15 +416,48 @@ SQLite 스모크 테스트: 모든 항목 통과
 
 ---
 
-## 12. Docker 실행
+## 12. 대시보드 화면
 
-### 12.1 Docker 이미지 직접 빌드
+`GET /dashboard`에 접속하면 로그인부터 최근 기록·주간 리포트 확인까지 브라우저에서 바로 할 수 있는 읽기 전용 화면을 제공합니다.
+
+접속 주소:
+
+```text
+로컬 실행: http://127.0.0.1:8000/dashboard
+Docker 실행: http://localhost:8000/dashboard
+```
+
+### 구성
+
+- 사용자명·비밀번호 로그인 폼
+- 최근 7일 평균과 직전 7일 대비 변화 (체중·혈압·공복혈당·걸음 수·수면 시간)
+- 수치 비교 기반의 주간 변화 요약 문장
+- 최근 건강 기록 최대 10건 (날짜 최신순, BMI·혈압·혈당 분류와 경고 상태 포함)
+- 새로고침 · 로그아웃 버튼
+
+### 인증 방식
+
+`/dashboard` 자체는 인증 없이 접근할 수 있는 화면입니다. 로그인 폼에 입력한 사용자명·비밀번호는 브라우저 저장소나 쿠키에 저장하지 않고, 페이지가 열려 있는 동안만 JavaScript 메모리에 유지되는 HTTP Basic 인증 헤더로 변환되어 API 호출에 사용됩니다. 새로고침하면 자동으로 로그아웃됩니다.
+
+### 구현 방식
+
+React·Vue·Jinja2·외부 CDN이나 차트 라이브러리 없이, 순수 HTML·CSS·JavaScript(`dashboard.html`)로 구현했습니다. 모든 데이터는 이미 구현된 API(`/users/me`, `/records`, `/reports/weekly`)를 `fetch()`로 호출해 가져오며, 별도의 데이터 처리 로직을 중복 구현하지 않습니다.
+
+### 제한 사항
+
+읽기 전용 화면으로, 새 기록 추가·수정·삭제는 지원하지 않습니다. 기록 추가·수정·삭제는 Swagger UI(`/docs`) 또는 API를 직접 호출해 사용할 수 있습니다.
+
+---
+
+## 13. Docker 실행
+
+### 13.1 Docker 이미지 직접 빌드
 
 ```powershell
 docker build -t jiha-health-log-api .
 ```
 
-### 12.2 기본 컨테이너 실행
+### 13.2 기본 컨테이너 실행
 
 ```powershell
 docker run --rm -p 8000:8000 jiha-health-log-api
@@ -385,12 +466,13 @@ docker run --rm -p 8000:8000 jiha-health-log-api
 접속:
 
 ```text
-http://localhost:8000/docs
+Swagger: http://localhost:8000/docs
+대시보드: http://localhost:8000/dashboard
 ```
 
 이 방식은 별도의 볼륨을 연결하지 않으므로 컨테이너를 삭제하면 컨테이너 내부 DB도 삭제됩니다.
 
-### 12.3 Docker Compose 실행
+### 13.3 Docker Compose 실행
 
 ```powershell
 docker compose up --build
@@ -402,7 +484,25 @@ docker compose up --build
 docker compose up -d --build
 ```
 
-종료 및 컨테이너 제거:
+### 13.4 Docker 내부 데모 데이터 준비
+
+로컬 SQLite DB와 Docker SQLite DB는 서로 분리되어 있습니다. Docker 대시보드에서 데모 계정으로 로그인하려면 Docker 내부 DB에도 데모 데이터를 생성해야 합니다.
+
+Docker Compose가 실행 중인 상태에서 새 터미널을 열고 다음 명령을 실행합니다.
+
+```powershell
+docker compose exec api python seed_year_data.py --reset
+```
+
+그다음 접속합니다.
+
+```text
+대시보드: http://localhost:8000/dashboard
+사용자명: demo_stable
+비밀번호: demo1234
+```
+
+### 13.5 종료
 
 ```powershell
 docker compose down
@@ -424,9 +524,16 @@ docker compose down -v
 
 이 명령은 SQLite 데이터가 저장된 Docker 볼륨까지 삭제하므로 주의해야 합니다.
 
+볼륨을 삭제한 뒤 데모 계정으로 다시 로그인하려면 다음 명령으로 데이터를 재생성해야 합니다.
+
+```powershell
+docker compose up -d --build
+docker compose exec api python seed_year_data.py --reset
+```
+
 ---
 
-## 13. Docker 영속성 검증 결과
+## 14. Docker 영속성 검증 결과
 
 다음 절차로 Docker 볼륨 영속성을 확인했습니다.
 
@@ -440,9 +547,11 @@ docker compose down -v
 
 컨테이너를 제거하고 다시 생성한 뒤에도 계정과 건강 기록이 유지되는 것을 확인했습니다.
 
+Docker Desktop 환경에서 `http://localhost:8000/dashboard` 접속도 확인했으며, Docker 내부 DB에 데모 데이터를 생성한 뒤 `demo_stable / demo1234`로 로그인하여 최근 기록·주간 리포트가 정상 표시되는 것을 확인했습니다.
+
 ---
 
-## 14. 보안 및 데이터 정책
+## 15. 보안 및 데이터 정책
 
 - 비밀번호 평문 저장 금지
 - Argon2 해시만 DB에 저장
@@ -452,6 +561,9 @@ docker compose down -v
 - SQLite 외래키 제약 활성화
 - 데이터 변경 작업 트랜잭션 처리
 - DB 파일은 Git 저장소와 Docker 이미지에서 제외
+- 대시보드 인증 정보는 브라우저 저장소·쿠키에 저장하지 않음
+
+> HTTP Basic Authentication은 인증 정보를 매 요청에 전송하므로, 실제 운영 환경에서는 반드시 HTTPS와 함께 사용해야 합니다.
 
 `.gitignore` 제외 대상:
 
@@ -471,7 +583,7 @@ health_log.db-shm
 
 ---
 
-## 15. 프로젝트 검증 결과
+## 16. 프로젝트 검증 결과
 
 - SQLite 전환 완료
 - 수동 Swagger 테스트 통과
@@ -480,13 +592,16 @@ health_log.db-shm
 - 서버 재시작 후 데이터 유지 확인
 - 3명 × 365일 합성 데이터 생성 확인
 - 재실행 중복 방지 확인
+- 주간 리포트 계산 결과 확인 (최근 7일 vs 직전 7일, 이전 기록 없는 경우 포함)
+- HTML 대시보드 로그인·최근 기록·주간 리포트 표시 확인 (로컬 및 Docker)
+- 혈압·공복혈당·걸음 수의 화면 표시값 정수 반올림 확인
 - Docker 이미지 빌드 확인
 - Docker 컨테이너 실행 확인
 - Docker named volume 영속성 확인
 
 ---
 
-## 16. 향후 개선 방향
+## 17. 향후 개선 방향
 
 - SQLAlchemy ORM 적용
 - Alembic 마이그레이션
@@ -497,12 +612,12 @@ health_log.db-shm
 - 건강 기록 CSV·JSON 내보내기
 - 사용자 목표 설정
 - 웨어러블 데이터 연동
-- 웹 대시보드
+- 대시보드에서 새 기록 입력 기능 추가
 - 건강 상태 기준 변경 이력 관리
 
 ---
 
-## 17. 참고 문서
+## 18. 참고 문서
 
 자세한 요구사항과 설계 결정은 다음 문서를 참고할 수 있습니다.
 
