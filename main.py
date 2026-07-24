@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, model_validator
 from pwdlib import PasswordHash
@@ -20,6 +20,7 @@ from pwdlib import PasswordHash
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "health_log.db"
 DASHBOARD_PATH = BASE_DIR / "dashboard.html"
+CHART_JS_PATH = BASE_DIR / "chart.umd.min.js"
 DB_PATH = Path(
     os.getenv("HEALTH_LOG_DB_PATH", str(DEFAULT_DB_PATH))
 ).expanduser().resolve()
@@ -361,6 +362,90 @@ class RecordExploreResponse(BaseModel):
 
     items: list[RecordResponse]
     pagination: PaginationInfo
+
+
+TrendPeriod = Literal[
+    "7d",
+    "30d",
+    "90d",
+    "1y",
+    "custom",
+]
+
+
+class TrendPoint(BaseModel):
+    """건강 변화 그래프의 하루 단위 데이터"""
+
+    date: dt.date
+    weight: float | None = None
+    systolic: int | None = None
+    diastolic: int | None = None
+    blood_sugar: int | None = None
+    steps: int | None = None
+    sleep_hours: float | None = None
+
+
+class TrendMetricSummary(BaseModel):
+    """한 건강 지표의 최저·최고·평균값"""
+
+    minimum: float | None = None
+    maximum: float | None = None
+    average: float | None = None
+
+
+class TrendSummary(BaseModel):
+    """그래프 기간에 포함된 건강 지표별 요약 통계"""
+
+    weight: TrendMetricSummary
+    systolic: TrendMetricSummary
+    diastolic: TrendMetricSummary
+    blood_sugar: TrendMetricSummary
+    steps: TrendMetricSummary
+    sleep_hours: TrendMetricSummary
+
+
+TrendRiskLevel = Literal[
+    "기록 없음",
+    "정상",
+    "주의",
+    "위험",
+]
+
+
+class TrendRiskSummary(BaseModel):
+    """조회 기간 내 정상·주의·위험 기록 수와 전체 상태"""
+
+    level: TrendRiskLevel
+    total_count: int = Field(..., ge=0)
+    normal_count: int = Field(..., ge=0)
+    caution_count: int = Field(..., ge=0)
+    danger_count: int = Field(..., ge=0)
+
+
+class TrendStatusSummary(BaseModel):
+    """혈압과 공복혈당의 기간별 참고 상태"""
+
+    blood_pressure: TrendRiskSummary
+    blood_sugar: TrendRiskSummary
+
+
+class TrendPeriodInfo(BaseModel):
+    """건강 변화 그래프의 조회 기간 정보"""
+
+    mode: TrendPeriod
+    start_date: dt.date
+    end_date: dt.date
+    total_days: int = Field(..., ge=1)
+    record_count: int = Field(..., ge=0)
+
+
+class TrendReportResponse(BaseModel):
+    """건강 변화 그래프에 필요한 시계열·통계·상태 집계"""
+
+    period: TrendPeriodInfo
+    points: list[TrendPoint]
+    summary: TrendSummary
+    status: TrendStatusSummary
 
 
 class DeleteResponse(BaseModel):
@@ -969,6 +1054,213 @@ def build_weekly_summary(
     ]
 
 
+def resolve_trend_date_range(
+    period: TrendPeriod,
+    latest_date: dt.date,
+    start_date: dt.date | None,
+    end_date: dt.date | None,
+) -> tuple[dt.date, dt.date]:
+    """그래프 기간 선택값을 실제 시작일과 종료일로 변환한다."""
+
+    if period == "custom":
+        if start_date is None or end_date is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "직접 설정 기간은 시작일과 종료일을 "
+                    "모두 입력해야 합니다."
+                ),
+            )
+
+        resolved_start = start_date
+        resolved_end = end_date
+    else:
+        if start_date is not None or end_date is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "7일·30일·90일·1년 기간에는 직접 설정 날짜를 "
+                    "함께 사용할 수 없습니다."
+                ),
+            )
+
+        period_days = {
+            "7d": 7,
+            "30d": 30,
+            "90d": 90,
+            "1y": 365,
+        }[period]
+        resolved_end = latest_date
+        resolved_start = resolved_end - dt.timedelta(
+            days=period_days - 1
+        )
+
+    if resolved_start > resolved_end:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="시작일은 종료일보다 늦을 수 없습니다.",
+        )
+
+    return resolved_start, resolved_end
+
+
+def summarize_trend_values(
+    values: list[int | float],
+) -> TrendMetricSummary:
+    """그래프 지표 하나의 최저·최고·평균값을 계산한다."""
+
+    if not values:
+        return TrendMetricSummary()
+
+    return TrendMetricSummary(
+        minimum=float(min(values)),
+        maximum=float(max(values)),
+        average=round(sum(values) / len(values), 2),
+    )
+
+
+def build_trend_summary(
+    rows: list[sqlite3.Row],
+) -> TrendSummary:
+    """조회된 실제 기록만 사용해 그래프 요약 통계를 만든다."""
+
+    return TrendSummary(
+        weight=summarize_trend_values(
+            [row["weight"] for row in rows]
+        ),
+        systolic=summarize_trend_values(
+            [row["systolic"] for row in rows]
+        ),
+        diastolic=summarize_trend_values(
+            [row["diastolic"] for row in rows]
+        ),
+        blood_sugar=summarize_trend_values(
+            [row["blood_sugar"] for row in rows]
+        ),
+        steps=summarize_trend_values(
+            [row["steps"] for row in rows]
+        ),
+        sleep_hours=summarize_trend_values(
+            [row["sleep_hours"] for row in rows]
+        ),
+    )
+
+
+def build_trend_risk_summary(
+    total_count: int,
+    normal_count: int,
+    caution_count: int,
+    danger_count: int,
+) -> TrendRiskSummary:
+    """주의·위험 건수로 조회 기간의 전체 참고 상태를 만든다."""
+
+    if total_count == 0:
+        level: TrendRiskLevel = "기록 없음"
+    elif danger_count > 0:
+        level = "위험"
+    elif caution_count > 0:
+        level = "주의"
+    else:
+        level = "정상"
+
+    return TrendRiskSummary(
+        level=level,
+        total_count=total_count,
+        normal_count=normal_count,
+        caution_count=caution_count,
+        danger_count=danger_count,
+    )
+
+
+def build_trend_status(
+    rows: list[sqlite3.Row],
+) -> TrendStatusSummary:
+    """실제 기록을 백엔드 상태 기준과 동일하게 분류해 집계한다."""
+
+    bp_normal_count = 0
+    bp_caution_count = 0
+    bp_danger_count = 0
+    sugar_normal_count = 0
+    sugar_caution_count = 0
+    sugar_danger_count = 0
+
+    for row in rows:
+        bp_category = classify_blood_pressure(
+            systolic=row["systolic"],
+            diastolic=row["diastolic"],
+        )
+        if bp_category == "고혈압":
+            bp_danger_count += 1
+        elif bp_category == "주의":
+            bp_caution_count += 1
+        else:
+            bp_normal_count += 1
+
+        sugar_category = classify_blood_sugar(
+            blood_sugar=row["blood_sugar"],
+        )
+        if sugar_category == "당뇨 의심":
+            sugar_danger_count += 1
+        elif sugar_category == "공복혈당장애":
+            sugar_caution_count += 1
+        else:
+            sugar_normal_count += 1
+
+    total_count = len(rows)
+
+    return TrendStatusSummary(
+        blood_pressure=build_trend_risk_summary(
+            total_count=total_count,
+            normal_count=bp_normal_count,
+            caution_count=bp_caution_count,
+            danger_count=bp_danger_count,
+        ),
+        blood_sugar=build_trend_risk_summary(
+            total_count=total_count,
+            normal_count=sugar_normal_count,
+            caution_count=sugar_caution_count,
+            danger_count=sugar_danger_count,
+        ),
+    )
+
+
+def build_trend_points(
+    rows: list[sqlite3.Row],
+    start_date: dt.date,
+    end_date: dt.date,
+) -> list[TrendPoint]:
+    """기간의 모든 날짜를 채우고 기록 없는 날은 null로 만든다."""
+
+    rows_by_date = {
+        row["date"]: row
+        for row in rows
+    }
+    points: list[TrendPoint] = []
+    current_date = start_date
+
+    while current_date <= end_date:
+        row = rows_by_date.get(current_date.isoformat())
+
+        if row is None:
+            points.append(TrendPoint(date=current_date))
+        else:
+            points.append(
+                TrendPoint(
+                    date=current_date,
+                    weight=row["weight"],
+                    systolic=row["systolic"],
+                    diastolic=row["diastolic"],
+                    blood_sugar=row["blood_sugar"],
+                    steps=row["steps"],
+                    sleep_hours=row["sleep_hours"],
+                )
+            )
+
+        current_date += dt.timedelta(days=1)
+
+    return points
+
+
 # =========================================================
 # 8. 기본 API
 # =========================================================
@@ -979,6 +1271,25 @@ def read_root():
         "message": "마이 헬스 로그 API가 실행 중입니다.",
         "status": "running",
     }
+
+
+@app.get(
+    "/static/chart.umd.min.js",
+    include_in_schema=False,
+)
+def read_chart_js():
+    """대시보드에서 사용하는 로컬 Chart.js 파일을 반환한다."""
+
+    if not CHART_JS_PATH.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Chart.js 파일을 찾을 수 없습니다.",
+        )
+
+    return FileResponse(
+        path=CHART_JS_PATH,
+        media_type="application/javascript",
+    )
 
 
 @app.get(
@@ -1672,6 +1983,94 @@ def read_stats(
         max_blood_sugar=max(
             record.blood_sugar for record in user_records
         ),
+    )
+
+
+@app.get(
+    "/reports/trends",
+    response_model=TrendReportResponse,
+)
+def read_trend_report(
+    period: TrendPeriod = Query(
+        default="30d",
+        description="그래프 기간: 7d, 30d, 90d, 1y, custom",
+    ),
+    start_date: dt.date | None = Query(
+        default=None,
+        description="직접 설정 시작일",
+    ),
+    end_date: dt.date | None = Query(
+        default=None,
+        description="직접 설정 종료일",
+    ),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """현재 사용자의 건강 지표 변화 시계열과 요약값을 반환한다."""
+
+    with closing(get_db_connection()) as connection:
+        latest_date_value = connection.execute(
+            """
+            SELECT MAX(date)
+            FROM health_records
+            WHERE user_id = ?
+            """,
+            (current_user.id,),
+        ).fetchone()[0]
+
+        if latest_date_value is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그래프를 생성할 건강 기록이 없습니다.",
+            )
+
+        latest_date = dt.date.fromisoformat(latest_date_value)
+        resolved_start, resolved_end = resolve_trend_date_range(
+            period=period,
+            latest_date=latest_date,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        rows = connection.execute(
+            """
+            SELECT
+                date,
+                weight,
+                systolic,
+                diastolic,
+                blood_sugar,
+                steps,
+                sleep_hours
+            FROM health_records
+            WHERE
+                user_id = ?
+                AND date BETWEEN ? AND ?
+            ORDER BY date ASC, id ASC
+            """,
+            (
+                current_user.id,
+                resolved_start.isoformat(),
+                resolved_end.isoformat(),
+            ),
+        ).fetchall()
+
+    points = build_trend_points(
+        rows=rows,
+        start_date=resolved_start,
+        end_date=resolved_end,
+    )
+
+    return TrendReportResponse(
+        period=TrendPeriodInfo(
+            mode=period,
+            start_date=resolved_start,
+            end_date=resolved_end,
+            total_days=len(points),
+            record_count=len(rows),
+        ),
+        points=points,
+        summary=build_trend_summary(rows),
+        status=build_trend_status(rows),
     )
 
 

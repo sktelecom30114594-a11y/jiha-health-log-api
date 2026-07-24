@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 
 
 MAIN_PATH = Path(__file__).with_name("main.py")
+CHART_JS_PATH = Path(__file__).with_name("chart.umd.min.js")
+DOCKERFILE_PATH = Path(__file__).with_name("Dockerfile")
 
 
 class FakePasswordHash:
@@ -114,7 +116,28 @@ def run_test() -> None:
             digits=0,
         ) == "평균 걸음 수가 직전 기간보다 773보 증가했습니다."
 
+        assert CHART_JS_PATH.is_file(), "Chart.js 파일이 없습니다."
+        chart_js_header = CHART_JS_PATH.read_text(
+            encoding="utf-8",
+        )[:300]
+        assert "Chart.js v4.5.1" in chart_js_header
+
+        assert DOCKERFILE_PATH.is_file(), "Dockerfile이 없습니다."
+        dockerfile_text = DOCKERFILE_PATH.read_text(encoding="utf-8")
+        assert (
+            "COPY main.py seed_year_data.py dashboard.html "
+            "chart.umd.min.js ./"
+            in dockerfile_text
+        )
+
         with TestClient(module.app) as client:
+            response = client.get("/static/chart.umd.min.js")
+            assert_status(response, 200, "로컬 Chart.js 응답")
+            assert response.headers["content-type"].startswith(
+                "application/javascript"
+            )
+            assert "Chart.js v4.5.1" in response.text[:300]
+
             response = client.get("/dashboard")
             assert_status(response, 200, "대시보드 HTML 응답")
             assert response.headers["content-type"].startswith(
@@ -138,6 +161,72 @@ def run_test() -> None:
             assert 'id="nextPageButton"' in response.text
             assert 'id="paginationInfo"' in response.text
             assert "/records/explore" in response.text
+            assert 'src="/static/chart.umd.min.js"' in response.text
+            assert 'id="trendSection"' in response.text
+            assert 'id="trendForm"' in response.text
+            assert 'id="trendMetric"' in response.text
+            assert 'id="trendPeriod"' in response.text
+            assert 'id="trendCustomDates"' in response.text
+            assert 'id="trendStartDate"' in response.text
+            assert 'id="trendEndDate"' in response.text
+            assert 'id="loadTrendButton"' in response.text
+            assert 'id="trendMinimumValue"' in response.text
+            assert 'id="trendMaximumValue"' in response.text
+            assert 'id="trendAverageValue"' in response.text
+            assert 'id="trendStatusPanel"' in response.text
+            assert 'id="trendStatusBadge"' in response.text
+            assert 'id="trendStatusText"' in response.text
+            assert 'id="trendDangerAlert"' in response.text
+            assert 'id="trendChart"' in response.text
+            assert 'id="trendEmpty"' in response.text
+            assert "/reports/trends" in response.text
+            assert "new Chart(canvas" in response.text
+            assert 'chartType: "bar"' in response.text
+            assert 'type: definition.chartType' in response.text
+            assert 'type: "line"' in response.text
+            assert 'const isBarChart = definition.chartType === "bar"' in response.text
+            assert 'statusKey: "blood_pressure"' in response.text
+            assert 'statusKey: "blood_sugar"' in response.text
+            assert "function renderTrendStatus(payload, definition)" in response.text
+            assert 'statusSummary.level === "위험"' in response.text
+            assert "위험 수치가 감지되었습니다." in response.text
+            assert "trendRiskBackgroundPlugin" not in response.text
+            assert "drawTrendRiskBand" not in response.text
+            assert "drawTrendThresholdLine" not in response.text
+            assert "TREND_CAUTION_BACKGROUND" not in response.text
+            assert "TREND_DANGER_BACKGROUND" not in response.text
+            assert "TREND_THRESHOLD_DASH" not in response.text
+            assert 'id="trendGuide"' not in response.text
+            assert 'id="trendGuideItems"' not in response.text
+            assert "그래프 읽는 법" not in response.text
+            assert 'id="trendPointLegend"' in response.text
+            assert (
+                "파란 점: 정상 · 주황 점: 주의 · 빨간 점: 위험"
+                in response.text
+            )
+            assert 'const TREND_NORMAL_COLOR = "#2764e7";' in response.text
+            assert (
+                'return usesRiskColors ? TREND_NORMAL_COLOR : normalColor;'
+                in response.text
+            )
+            assert "function renderTrendPointLegend(definition)" in response.text
+            assert (
+                "Chart.defaults.plugins.legend.labels.generateLabels(chart)"
+                in response.text
+            )
+            assert "function buildTrendPointBackgroundColors(" in response.text
+            assert "trendGuideDefinitions" not in response.text
+            assert ".trend-guide" not in response.text
+            assert ".trend-point-legend" in response.text
+            assert "pointBackgroundColor: pointBackgroundColors" in response.text
+            assert "value >= 140" in response.text
+            assert "value >= 120" in response.text
+            assert "value >= 90" in response.text
+            assert "value >= 80" in response.text
+            assert "value >= 126" in response.text
+            assert "value >= 100" in response.text
+            assert "chartjs-plugin-annotation" not in response.text
+            assert "cdn.jsdelivr.net" not in response.text
             assert (
                 'formatNumber(current.average_blood_sugar, 0)'
                 in response.text
@@ -201,6 +290,12 @@ def run_test() -> None:
                 auth=weekly_auth,
             )
             assert_status(response, 404, "기록 없는 주간 리포트")
+
+            response = client.get(
+                "/reports/trends",
+                auth=weekly_auth,
+            )
+            assert_status(response, 404, "기록 없는 변화 그래프")
 
             response = client.post(
                 "/users/login",
@@ -417,6 +512,225 @@ def run_test() -> None:
                 ),
             )
             assert_status(response, 201, "탐색 사용자 격리용 기록")
+
+            response = client.get("/reports/trends")
+            assert_status(response, 401, "변화 그래프 인증 필요")
+
+            response = client.get(
+                "/reports/trends",
+                auth=explorer_auth,
+            )
+            assert_status(response, 200, "변화 그래프 기본 30일")
+            trend_result = response.json()
+            assert trend_result["period"] == {
+                "mode": "30d",
+                "start_date": "2026-07-14",
+                "end_date": "2026-08-12",
+                "total_days": 30,
+                "record_count": 12,
+            }
+            assert len(trend_result["points"]) == 30
+            assert trend_result["points"][0] == {
+                "date": "2026-07-14",
+                "weight": None,
+                "systolic": None,
+                "diastolic": None,
+                "blood_sugar": None,
+                "steps": None,
+                "sleep_hours": None,
+            }
+            assert trend_result["points"][-1]["date"] == "2026-08-12"
+            assert trend_result["points"][-1]["weight"] == 68.0
+            assert trend_result["summary"]["weight"] == {
+                "minimum": 50.0,
+                "maximum": 75.0,
+                "average": 61.83,
+            }
+            assert trend_result["summary"]["steps"] == {
+                "minimum": 1000.0,
+                "maximum": 12000.0,
+                "average": 6500.0,
+            }
+            assert trend_result["status"] == {
+                "blood_pressure": {
+                    "level": "위험",
+                    "total_count": 12,
+                    "normal_count": 3,
+                    "caution_count": 6,
+                    "danger_count": 3,
+                },
+                "blood_sugar": {
+                    "level": "위험",
+                    "total_count": 12,
+                    "normal_count": 4,
+                    "caution_count": 5,
+                    "danger_count": 3,
+                },
+            }
+
+            for period, expected_start, expected_days in [
+                ("7d", "2026-08-06", 7),
+                ("90d", "2026-05-15", 90),
+                ("1y", "2025-08-13", 365),
+            ]:
+                response = client.get(
+                    "/reports/trends",
+                    auth=explorer_auth,
+                    params={"period": period},
+                )
+                assert_status(
+                    response,
+                    200,
+                    f"변화 그래프 {period} 기간",
+                )
+                trend_result = response.json()
+                assert trend_result["period"]["start_date"] == (
+                    expected_start
+                )
+                assert trend_result["period"]["end_date"] == (
+                    "2026-08-12"
+                )
+                assert trend_result["period"]["total_days"] == (
+                    expected_days
+                )
+                assert len(trend_result["points"]) == expected_days
+
+            response = client.get(
+                "/reports/trends",
+                auth=explorer_auth,
+                params={
+                    "period": "custom",
+                    "start_date": "2026-08-03",
+                    "end_date": "2026-08-05",
+                },
+            )
+            assert_status(response, 200, "변화 그래프 직접 설정")
+            trend_result = response.json()
+            assert trend_result["period"] == {
+                "mode": "custom",
+                "start_date": "2026-08-03",
+                "end_date": "2026-08-05",
+                "total_days": 3,
+                "record_count": 3,
+            }
+            assert [
+                point["date"] for point in trend_result["points"]
+            ] == [
+                "2026-08-03",
+                "2026-08-04",
+                "2026-08-05",
+            ]
+            assert trend_result["summary"]["blood_sugar"] == {
+                "minimum": 92.0,
+                "maximum": 130.0,
+                "average": 107.0,
+            }
+            assert trend_result["status"]["blood_pressure"] == {
+                "level": "위험",
+                "total_count": 3,
+                "normal_count": 1,
+                "caution_count": 1,
+                "danger_count": 1,
+            }
+            assert trend_result["status"]["blood_sugar"] == {
+                "level": "위험",
+                "total_count": 3,
+                "normal_count": 2,
+                "caution_count": 0,
+                "danger_count": 1,
+            }
+
+            response = client.get(
+                "/reports/trends",
+                auth=explorer_auth,
+                params={
+                    "period": "custom",
+                    "start_date": "2026-07-31",
+                    "end_date": "2026-08-02",
+                },
+            )
+            assert_status(response, 200, "변화 그래프 기록 없는 날짜")
+            trend_result = response.json()
+            assert trend_result["period"]["record_count"] == 2
+            assert trend_result["points"][0] == {
+                "date": "2026-07-31",
+                "weight": None,
+                "systolic": None,
+                "diastolic": None,
+                "blood_sugar": None,
+                "steps": None,
+                "sleep_hours": None,
+            }
+
+            response = client.get(
+                "/reports/trends",
+                auth=explorer_auth,
+                params={
+                    "period": "custom",
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-03",
+                },
+            )
+            assert_status(response, 200, "변화 그래프 빈 기간")
+            trend_result = response.json()
+            assert trend_result["period"]["record_count"] == 0
+            assert len(trend_result["points"]) == 3
+            assert all(
+                point["weight"] is None
+                for point in trend_result["points"]
+            )
+            assert trend_result["summary"]["weight"] == {
+                "minimum": None,
+                "maximum": None,
+                "average": None,
+            }
+            assert trend_result["status"]["blood_pressure"] == {
+                "level": "기록 없음",
+                "total_count": 0,
+                "normal_count": 0,
+                "caution_count": 0,
+                "danger_count": 0,
+            }
+            assert trend_result["status"]["blood_sugar"] == {
+                "level": "기록 없음",
+                "total_count": 0,
+                "normal_count": 0,
+                "caution_count": 0,
+                "danger_count": 0,
+            }
+
+            for invalid_params, expected_status, label in [
+                (
+                    {"period": "custom", "start_date": "2026-08-01"},
+                    400,
+                    "변화 그래프 직접 설정 종료일 누락",
+                ),
+                (
+                    {
+                        "period": "custom",
+                        "start_date": "2026-08-10",
+                        "end_date": "2026-08-01",
+                    },
+                    400,
+                    "변화 그래프 역전 날짜 범위",
+                ),
+                (
+                    {"period": "7d", "start_date": "2026-08-01"},
+                    400,
+                    "변화 그래프 사전 기간과 직접 날짜 혼용",
+                ),
+                (
+                    {"period": "14d"},
+                    422,
+                    "변화 그래프 잘못된 기간",
+                ),
+            ]:
+                response = client.get(
+                    "/reports/trends",
+                    auth=explorer_auth,
+                    params=invalid_params,
+                )
+                assert_status(response, expected_status, label)
 
             response = client.get("/records/explore")
             assert_status(response, 401, "기록 탐색 인증 필요")

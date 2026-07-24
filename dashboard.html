@@ -369,6 +369,76 @@
       font-size: 0.96rem;
     }
 
+    .trend-controls {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      align-items: end;
+      margin-bottom: 18px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      background: var(--surface-soft);
+    }
+
+    .trend-controls .field {
+      margin-bottom: 0;
+    }
+
+    .trend-custom-dates {
+      display: contents;
+    }
+
+    .trend-submit {
+      display: flex;
+      align-items: flex-end;
+    }
+
+    .trend-submit .primary-button {
+      width: 100%;
+    }
+
+    .trend-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .trend-summary-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 15px 16px;
+      background: white;
+    }
+
+    .trend-summary-label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+
+    .trend-summary-value {
+      display: block;
+      margin-top: 7px;
+      font-size: 1.2rem;
+      letter-spacing: -0.02em;
+    }
+
+    .trend-chart-wrap {
+      position: relative;
+      min-height: 380px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      background: white;
+    }
+
+    .trend-chart-wrap canvas {
+      width: 100% !important;
+      height: 346px !important;
+    }
+
     .pagination {
       display: flex;
       align-items: center;
@@ -440,6 +510,64 @@
       color: var(--warning);
     }
 
+    .status-badge.danger {
+      background: #fff0f2;
+      color: var(--danger);
+    }
+
+    .trend-status-panel {
+      margin-bottom: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 15px 16px;
+      background: var(--surface-soft);
+    }
+
+    .trend-status-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .trend-status-title {
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .trend-danger-alert {
+      margin: 11px 0 0;
+      border: 1px solid #ffd3d9;
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fff0f2;
+      color: var(--danger);
+      font-size: 0.9rem;
+      font-weight: 800;
+    }
+
+    .trend-status-text {
+      margin: 10px 0 0;
+      color: #344054;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    .trend-status-note {
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .trend-point-legend {
+      margin: -2px 0 14px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+      text-align: right;
+    }
+
     .empty-state {
       border: 1px dashed #cdd5e3;
       border-radius: 14px;
@@ -488,8 +616,23 @@
 
       .metrics-grid,
       .summary-list,
-      .filters-grid {
+      .filters-grid,
+      .trend-controls,
+      .trend-summary-grid {
         grid-template-columns: 1fr;
+      }
+
+      .trend-chart-wrap {
+        min-height: 320px;
+        padding: 10px;
+      }
+
+      .trend-chart-wrap canvas {
+        height: 298px !important;
+      }
+
+      .trend-point-legend {
+        text-align: left;
       }
 
       .filter-actions {
@@ -595,6 +738,91 @@
         </div>
         <ul id="summaryList" class="summary-list"></ul>
         <div id="summaryEmpty" class="empty-state" hidden>표시할 주간 요약이 없습니다.</div>
+      </section>
+
+      <section id="trendSection" class="card section-card" aria-labelledby="trendTitle">
+        <div class="section-head">
+          <div>
+            <h3 id="trendTitle" class="section-title">건강 변화 그래프</h3>
+            <p id="trendPeriodDescription" class="section-subtitle">
+              기간과 건강 지표를 선택해 변화 추이를 확인하세요.
+            </p>
+          </div>
+        </div>
+
+        <form id="trendForm" class="trend-controls">
+          <div class="field">
+            <label for="trendMetric">건강 지표</label>
+            <select id="trendMetric" name="metric">
+              <option value="weight">체중</option>
+              <option value="blood_pressure">혈압</option>
+              <option value="blood_sugar">공복혈당</option>
+              <option value="steps">걸음 수</option>
+              <option value="sleep_hours">수면 시간</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="trendPeriod">조회 기간</label>
+            <select id="trendPeriod" name="period">
+              <option value="7d">최근 7일</option>
+              <option value="30d" selected>최근 30일</option>
+              <option value="90d">최근 90일</option>
+              <option value="1y">최근 1년</option>
+              <option value="custom">직접 설정</option>
+            </select>
+          </div>
+          <div id="trendCustomDates" class="trend-custom-dates" hidden>
+            <div class="field">
+              <label for="trendStartDate">시작일</label>
+              <input id="trendStartDate" name="start_date" type="date">
+            </div>
+            <div class="field">
+              <label for="trendEndDate">종료일</label>
+              <input id="trendEndDate" name="end_date" type="date">
+            </div>
+          </div>
+          <div class="trend-submit">
+            <button id="loadTrendButton" class="primary-button" type="submit">그래프 조회</button>
+          </div>
+        </form>
+
+        <div id="trendSummaryGrid" class="trend-summary-grid">
+          <article class="trend-summary-card">
+            <span class="trend-summary-label">최저</span>
+            <strong id="trendMinimumValue" class="trend-summary-value">-</strong>
+          </article>
+          <article class="trend-summary-card">
+            <span class="trend-summary-label">최고</span>
+            <strong id="trendMaximumValue" class="trend-summary-value">-</strong>
+          </article>
+          <article class="trend-summary-card">
+            <span class="trend-summary-label">평균</span>
+            <strong id="trendAverageValue" class="trend-summary-value">-</strong>
+          </article>
+        </div>
+
+        <div id="trendStatusPanel" class="trend-status-panel" role="status" hidden>
+          <div class="trend-status-head">
+            <span class="trend-status-title">조회 기간 참고 상태</span>
+            <span id="trendStatusBadge" class="status-badge">-</span>
+          </div>
+          <p id="trendDangerAlert" class="trend-danger-alert" role="alert" hidden>
+            위험 수치가 감지되었습니다.
+          </p>
+          <p id="trendStatusText" class="trend-status-text"></p>
+          <p class="trend-status-note">
+            의학적 진단이 아닌 입력 수치의 기준 분류이며, 한 번의 측정만으로 상태를 확정할 수 없습니다.
+          </p>
+        </div>
+
+        <p id="trendPointLegend" class="trend-point-legend" hidden>
+          파란 점: 정상 · 주황 점: 주의 · 빨간 점: 위험
+        </p>
+
+        <div id="trendChartWrap" class="trend-chart-wrap" hidden>
+          <canvas id="trendChart" role="img" aria-label="선택한 건강 지표의 기간별 변화 그래프"></canvas>
+        </div>
+        <div id="trendEmpty" class="empty-state">그래프 데이터를 불러오는 중입니다.</div>
       </section>
 
       <section class="card section-card" aria-labelledby="recordsTitle">
@@ -710,12 +938,15 @@
     </section>
   </main>
 
+  <script src="/static/chart.umd.min.js"></script>
   <script>
     "use strict";
 
     let authHeader = null;
     let currentRecordsPage = 1;
     let currentPagination = null;
+    let currentTrendPayload = null;
+    let trendChart = null;
 
     const loginSection = document.getElementById("loginSection");
     const loginForm = document.getElementById("loginForm");
@@ -730,6 +961,82 @@
     const searchRecordsButton = document.getElementById("searchRecordsButton");
     const previousPageButton = document.getElementById("previousPageButton");
     const nextPageButton = document.getElementById("nextPageButton");
+    const trendSection = document.getElementById("trendSection");
+    const trendForm = document.getElementById("trendForm");
+    const trendMetric = document.getElementById("trendMetric");
+    const trendPeriod = document.getElementById("trendPeriod");
+    const trendCustomDates = document.getElementById("trendCustomDates");
+    const trendStartDate = document.getElementById("trendStartDate");
+    const trendEndDate = document.getElementById("trendEndDate");
+    const loadTrendButton = document.getElementById("loadTrendButton");
+
+    const TREND_NORMAL_COLOR = "#2764e7";
+    const TREND_CAUTION_COLOR = "#d97706";
+    const TREND_DANGER_COLOR = "#c73b4b";
+
+    const trendMetricDefinitions = {
+      weight: {
+        metricKey: "weight",
+        chartType: "line",
+        label: "체중",
+        unit: "kg",
+        summaryKeys: ["weight"],
+        fields: [
+          { key: "weight", label: "체중", color: "#2764e7" },
+        ],
+      },
+      blood_pressure: {
+        metricKey: "blood_pressure",
+        chartType: "line",
+        label: "혈압",
+        unit: "mmHg",
+        summaryKeys: ["systolic", "diastolic"],
+        statusKey: "blood_pressure",
+        cautionLabel: "주의 범위",
+        dangerLabel: "고혈압 범위",
+        suggestedMin: 60,
+        suggestedMax: 160,
+        fields: [
+          { key: "systolic", label: "수축기", color: "#2764e7" },
+          { key: "diastolic", label: "이완기", color: "#0f766e" },
+        ],
+      },
+      blood_sugar: {
+        metricKey: "blood_sugar",
+        chartType: "line",
+        label: "공복혈당",
+        unit: "mg/dL",
+        summaryKeys: ["blood_sugar"],
+        statusKey: "blood_sugar",
+        cautionLabel: "공복혈당장애 범위",
+        dangerLabel: "당뇨 의심 범위",
+        suggestedMin: 70,
+        suggestedMax: 140,
+        fields: [
+          { key: "blood_sugar", label: "공복혈당", color: "#7c3aed" },
+        ],
+      },
+      steps: {
+        metricKey: "steps",
+        chartType: "bar",
+        label: "걸음 수",
+        unit: "보",
+        summaryKeys: ["steps"],
+        fields: [
+          { key: "steps", label: "걸음 수", color: "#117a52" },
+        ],
+      },
+      sleep_hours: {
+        metricKey: "sleep_hours",
+        chartType: "line",
+        label: "수면 시간",
+        unit: "시간",
+        summaryKeys: ["sleep_hours"],
+        fields: [
+          { key: "sleep_hours", label: "수면 시간", color: "#0f766e" },
+        ],
+      },
+    };
 
     function toBase64Utf8(value) {
       const bytes = new TextEncoder().encode(value);
@@ -905,6 +1212,401 @@
       summaryEmpty.hidden = false;
     }
 
+    function buildTrendUrl() {
+      const params = new URLSearchParams();
+      params.set("period", trendPeriod.value);
+
+      if (trendPeriod.value === "custom") {
+        if (!trendStartDate.value || !trendEndDate.value) {
+          throw new Error("직접 설정 기간은 시작일과 종료일을 모두 입력해야 합니다.");
+        }
+        params.set("start_date", trendStartDate.value);
+        params.set("end_date", trendEndDate.value);
+      }
+
+      return `/reports/trends?${params.toString()}`;
+    }
+
+    function toggleTrendCustomDates() {
+      const isCustom = trendPeriod.value === "custom";
+      trendCustomDates.hidden = !isCustom;
+      trendStartDate.required = isCustom;
+      trendEndDate.required = isCustom;
+    }
+
+    function resetTrendForm() {
+      trendForm.reset();
+      trendMetric.value = "weight";
+      trendPeriod.value = "30d";
+      trendStartDate.value = "";
+      trendEndDate.value = "";
+      toggleTrendCustomDates();
+      currentTrendPayload = null;
+    }
+
+    function destroyTrendChart() {
+      if (trendChart) {
+        trendChart.destroy();
+        trendChart = null;
+      }
+    }
+
+    function formatTrendValue(value, unit, digits = 2) {
+      if (value === null || value === undefined) {
+        return "-";
+      }
+      return `${formatNumber(value, digits)}${unit}`;
+    }
+
+    function getTrendSummaryText(summary, definition, property) {
+      const values = definition.summaryKeys.map((key) => {
+        const metricSummary = summary[key] || {};
+        return metricSummary[property];
+      });
+
+      if (values.some((value) => value === null || value === undefined)) {
+        return "-";
+      }
+
+      const digits = definition.unit === "보" || definition.unit === "mmHg" ? 0 : 2;
+      if (values.length === 2) {
+        return `${formatNumber(values[0], digits)}/${formatNumber(values[1], digits)}${definition.unit}`;
+      }
+      return formatTrendValue(values[0], definition.unit, digits);
+    }
+
+    function renderTrendSummary(payload, definition) {
+      document.getElementById("trendMinimumValue").textContent =
+        getTrendSummaryText(payload.summary, definition, "minimum");
+      document.getElementById("trendMaximumValue").textContent =
+        getTrendSummaryText(payload.summary, definition, "maximum");
+      document.getElementById("trendAverageValue").textContent =
+        getTrendSummaryText(payload.summary, definition, "average");
+    }
+
+    function renderTrendPointLegend(definition) {
+      const legend = document.getElementById("trendPointLegend");
+      const showLegend = Boolean(
+        definition
+        && (
+          definition.metricKey === "blood_pressure"
+          || definition.metricKey === "blood_sugar"
+        )
+      );
+      legend.hidden = !showLegend;
+    }
+
+    function clearTrendStatus() {
+      const panel = document.getElementById("trendStatusPanel");
+      const badge = document.getElementById("trendStatusBadge");
+      const dangerAlert = document.getElementById("trendDangerAlert");
+      const text = document.getElementById("trendStatusText");
+
+      panel.hidden = true;
+      badge.className = "status-badge";
+      badge.textContent = "-";
+      dangerAlert.hidden = true;
+      dangerAlert.textContent = "위험 수치가 감지되었습니다.";
+      text.textContent = "";
+    }
+
+    function renderTrendStatus(payload, definition) {
+      if (
+        !definition.statusKey
+        || !payload.status
+        || !payload.status[definition.statusKey]
+      ) {
+        clearTrendStatus();
+        return;
+      }
+
+      const statusSummary = payload.status[definition.statusKey];
+      if (statusSummary.total_count === 0) {
+        clearTrendStatus();
+        return;
+      }
+
+      const panel = document.getElementById("trendStatusPanel");
+      const badge = document.getElementById("trendStatusBadge");
+      const dangerAlert = document.getElementById("trendDangerAlert");
+      const text = document.getElementById("trendStatusText");
+
+      badge.className = "status-badge";
+      dangerAlert.hidden = true;
+      if (statusSummary.level === "위험") {
+        badge.classList.add("danger");
+        dangerAlert.textContent = "위험 수치가 감지되었습니다.";
+        dangerAlert.hidden = false;
+      } else if (statusSummary.level === "주의") {
+        badge.classList.add("warning");
+      }
+      badge.textContent = statusSummary.level;
+
+      text.textContent =
+        `실제 기록 ${formatNumber(statusSummary.total_count, 0)}건 중 `
+        + `${definition.dangerLabel} ${formatNumber(statusSummary.danger_count, 0)}건, `
+        + `${definition.cautionLabel} ${formatNumber(statusSummary.caution_count, 0)}건, `
+        + `정상 범위 ${formatNumber(statusSummary.normal_count, 0)}건입니다.`;
+
+      panel.hidden = false;
+    }
+
+    function getTrendPointColor(metricKey, fieldKey, value, normalColor) {
+      const usesRiskColors =
+        metricKey === "blood_pressure"
+        || metricKey === "blood_sugar";
+
+      if (value === null || value === undefined) {
+        return usesRiskColors ? TREND_NORMAL_COLOR : normalColor;
+      }
+
+      if (metricKey === "blood_pressure") {
+        if (fieldKey === "systolic") {
+          if (value >= 140) {
+            return TREND_DANGER_COLOR;
+          }
+          if (value >= 120) {
+            return TREND_CAUTION_COLOR;
+          }
+        } else if (fieldKey === "diastolic") {
+          if (value >= 90) {
+            return TREND_DANGER_COLOR;
+          }
+          if (value >= 80) {
+            return TREND_CAUTION_COLOR;
+          }
+        }
+      } else if (metricKey === "blood_sugar") {
+        if (value >= 126) {
+          return TREND_DANGER_COLOR;
+        }
+        if (value >= 100) {
+          return TREND_CAUTION_COLOR;
+        }
+      }
+
+      return usesRiskColors ? TREND_NORMAL_COLOR : normalColor;
+    }
+
+    function buildTrendPointBackgroundColors(payload, definition, field) {
+      return payload.points.map((point) => getTrendPointColor(
+        definition.metricKey,
+        field.key,
+        point[field.key],
+        field.color,
+      ));
+    }
+
+    function buildTrendDatasets(payload, definition) {
+      const pointRadius = payload.points.length > 90 ? 0 : 2.5;
+      const datasets = [];
+      const usesRiskPointColors =
+        definition.metricKey === "blood_pressure"
+        || definition.metricKey === "blood_sugar";
+
+      for (const field of definition.fields) {
+        const isBarChart = definition.chartType === "bar";
+        const pointBackgroundColors = usesRiskPointColors
+          ? buildTrendPointBackgroundColors(payload, definition, field)
+          : field.color;
+
+        datasets.push({
+          type: definition.chartType,
+          label: field.label,
+          data: payload.points.map((point) => point[field.key]),
+          borderColor: field.color,
+          backgroundColor: field.color,
+          pointBackgroundColor: pointBackgroundColors,
+          pointBorderColor: pointBackgroundColors,
+          borderWidth: isBarChart ? 1 : 2,
+          pointRadius: isBarChart ? 0 : pointRadius,
+          pointHoverRadius: isBarChart ? 0 : 5,
+          tension: isBarChart ? 0 : 0.22,
+          fill: false,
+          spanGaps: false,
+          order: isBarChart ? 1 : 0,
+          barPercentage: isBarChart ? 0.72 : undefined,
+          categoryPercentage: isBarChart ? 0.82 : undefined,
+        });
+
+        const average = payload.summary[field.key]
+          ? payload.summary[field.key].average
+          : null;
+        if (average !== null && average !== undefined) {
+          datasets.push({
+            type: "line",
+            label: `${field.label} 기간 평균`,
+            data: payload.points.map(() => average),
+            borderColor: field.color,
+            backgroundColor: field.color,
+            borderWidth: 1.5,
+            borderDash: [6, 5],
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            tension: 0,
+            fill: false,
+          });
+        }
+      }
+
+      return datasets;
+    }
+
+    function renderTrendChart(payload, definition) {
+      if (typeof Chart === "undefined") {
+        throw new Error("그래프 라이브러리를 불러오지 못했습니다.");
+      }
+
+      destroyTrendChart();
+      const canvas = document.getElementById("trendChart");
+      const labels = payload.points.map((point) => point.date);
+      const integerUnit = definition.unit === "보" || definition.unit === "mmHg";
+
+      trendChart = new Chart(canvas, {
+        type: definition.chartType,
+        data: {
+          labels,
+          datasets: buildTrendDatasets(payload, definition),
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: "index",
+            intersect: false,
+          },
+          plugins: {
+            legend: {
+              position: "top",
+              labels: {
+                usePointStyle: true,
+                boxWidth: 9,
+                generateLabels(chart) {
+                  const labels =
+                    Chart.defaults.plugins.legend.labels.generateLabels(chart);
+                  return labels.map((item) => {
+                    const dataset = chart.data.datasets[item.datasetIndex];
+                    return {
+                      ...item,
+                      fillStyle: dataset.borderColor,
+                      strokeStyle: dataset.borderColor,
+                    };
+                  });
+                },
+              },
+            },
+            tooltip: {
+              callbacks: {
+                label(context) {
+                  const value = context.parsed.y;
+                  if (value === null || value === undefined) {
+                    return `${context.dataset.label}: 기록 없음`;
+                  }
+                  const digits = integerUnit ? 0 : 2;
+                  return `${context.dataset.label}: ${formatNumber(value, digits)}${definition.unit}`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              grid: {
+                display: false,
+              },
+              ticks: {
+                autoSkip: true,
+                maxTicksLimit: payload.points.length > 90 ? 12 : 10,
+                maxRotation: 0,
+                callback(value) {
+                  const label = this.getLabelForValue(value);
+                  return label ? label.slice(5).replace("-", ".") : "";
+                },
+              },
+            },
+            y: {
+              beginAtZero: trendMetric.value === "steps",
+              suggestedMin: definition.suggestedMin,
+              suggestedMax: definition.suggestedMax,
+              title: {
+                display: true,
+                text: definition.unit,
+              },
+              ticks: {
+                precision: integerUnit ? 0 : 2,
+              },
+            },
+          },
+        },
+      });
+    }
+
+    function renderTrendReport(payload) {
+      currentTrendPayload = payload;
+      const definition = trendMetricDefinitions[trendMetric.value];
+      const period = payload.period;
+      const trendChartWrap = document.getElementById("trendChartWrap");
+      const trendEmpty = document.getElementById("trendEmpty");
+
+      document.getElementById("trendPeriodDescription").textContent =
+        `${period.start_date} ~ ${period.end_date} · 기록 ${period.record_count}건`;
+      renderTrendSummary(payload, definition);
+      renderTrendStatus(payload, definition);
+      renderTrendPointLegend(definition);
+
+      if (period.record_count === 0) {
+        destroyTrendChart();
+        trendChartWrap.hidden = true;
+        trendEmpty.textContent = "선택한 기간에 표시할 건강 기록이 없습니다.";
+        trendEmpty.hidden = false;
+        return;
+      }
+
+      trendEmpty.hidden = true;
+      trendChartWrap.hidden = false;
+      renderTrendChart(payload, definition);
+    }
+
+    function clearTrendReport(message) {
+      currentTrendPayload = null;
+      destroyTrendChart();
+      document.getElementById("trendPeriodDescription").textContent = message;
+      document.getElementById("trendMinimumValue").textContent = "-";
+      document.getElementById("trendMaximumValue").textContent = "-";
+      document.getElementById("trendAverageValue").textContent = "-";
+      clearTrendStatus();
+      renderTrendPointLegend(null);
+      document.getElementById("trendChartWrap").hidden = true;
+      const trendEmpty = document.getElementById("trendEmpty");
+      trendEmpty.textContent = message;
+      trendEmpty.hidden = false;
+    }
+
+    async function loadTrendReport() {
+      const payload = await apiFetch(buildTrendUrl());
+      renderTrendReport(payload);
+    }
+
+    async function runTrendSearch() {
+      trendSection.classList.add("loading");
+      loadTrendButton.disabled = true;
+      setMessage(dashboardMessage, "건강 변화 그래프를 불러오는 중입니다.", "info");
+
+      try {
+        await loadTrendReport();
+        setMessage(dashboardMessage);
+      } catch (error) {
+        if (error.status === 404) {
+          clearTrendReport("그래프를 생성할 건강 기록이 없습니다.");
+          setMessage(dashboardMessage);
+        } else {
+          setMessage(dashboardMessage, error.message, "error");
+        }
+      } finally {
+        trendSection.classList.remove("loading");
+        loadTrendButton.disabled = false;
+      }
+    }
+
     function buildRecordsExploreUrl(page) {
       const params = new URLSearchParams();
       const values = {
@@ -1036,10 +1738,21 @@
       dashboard.classList.add("loading");
       refreshButton.disabled = true;
       searchRecordsButton.disabled = true;
+      loadTrendButton.disabled = true;
       setMessage(dashboardMessage, "데이터를 불러오는 중입니다.", "info");
 
       try {
         await loadRecords(currentRecordsPage);
+
+        try {
+          await loadTrendReport();
+        } catch (error) {
+          if (error.status === 404) {
+            clearTrendReport("그래프를 생성할 건강 기록이 없습니다.");
+          } else {
+            throw error;
+          }
+        }
 
         try {
           const report = await apiFetch("/reports/weekly");
@@ -1059,6 +1772,7 @@
         dashboard.classList.remove("loading");
         refreshButton.disabled = false;
         searchRecordsButton.disabled = false;
+        loadTrendButton.disabled = false;
       }
     }
 
@@ -1095,6 +1809,7 @@
         dashboard.classList.add("is-visible");
         document.getElementById("password").value = "";
         resetRecordsSearchForm();
+        resetTrendForm();
         await loadDashboardData();
       } catch (error) {
         authHeader = null;
@@ -1103,6 +1818,19 @@
         loginButton.disabled = false;
         loginButton.textContent = "로그인";
       }
+    });
+
+    trendPeriod.addEventListener("change", toggleTrendCustomDates);
+
+    trendMetric.addEventListener("change", () => {
+      if (currentTrendPayload) {
+        renderTrendReport(currentTrendPayload);
+      }
+    });
+
+    trendForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await runTrendSearch();
     });
 
     recordsSearchForm.addEventListener("submit", async (event) => {
@@ -1140,6 +1868,8 @@
       loginSection.hidden = false;
       loginForm.reset();
       resetRecordsSearchForm();
+      resetTrendForm();
+      clearTrendReport("로그인 후 건강 변화 그래프를 확인할 수 있습니다.");
       document.getElementById("recordsBody").replaceChildren();
       document.getElementById("recordsTableWrap").hidden = true;
       document.getElementById("recordsEmpty").hidden = false;
