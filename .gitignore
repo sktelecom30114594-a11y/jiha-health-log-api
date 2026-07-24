@@ -9,3 +9,4 @@ health_log.db
 health_log.db-journal
 health_log.db-wal
 health_log.db-shm
+backup/

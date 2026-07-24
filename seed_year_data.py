@@ -730,11 +730,12 @@ def ensure_demo_user(
         INSERT INTO users (
             username,
             hashed_password,
-            created_at
+            created_at,
+            role
         )
-        VALUES (?, ?, ?)
+        VALUES (?, ?, ?, ?)
         """,
-        (profile.username, hashed_password, now),
+        (profile.username, hashed_password, now, "user"),
     )
     return int(cursor.lastrowid), True
 

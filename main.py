@@ -20,6 +20,7 @@ from pwdlib import PasswordHash
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "health_log.db"
 DASHBOARD_PATH = BASE_DIR / "dashboard.html"
+ADMIN_DASHBOARD_PATH = BASE_DIR / "admin.html"
 CHART_JS_PATH = BASE_DIR / "chart.umd.min.js"
 DB_PATH = Path(
     os.getenv("HEALTH_LOG_DB_PATH", str(DEFAULT_DB_PATH))
@@ -44,8 +45,28 @@ def get_db_connection() -> sqlite3.Connection:
     return connection
 
 
+def ensure_users_role_column(
+    connection: sqlite3.Connection,
+) -> None:
+    """구버전 users 테이블에 role 컬럼을 멱등적으로 추가한다."""
+
+    columns = connection.execute(
+        "PRAGMA table_info(users)"
+    ).fetchall()
+    column_names = {row["name"] for row in columns}
+
+    if "role" not in column_names:
+        connection.execute(
+            """
+            ALTER TABLE users
+            ADD COLUMN role TEXT NOT NULL DEFAULT 'user'
+            CHECK (role IN ('user', 'admin'))
+            """
+        )
+
+
 def init_database() -> None:
-    """필요한 SQLite 테이블을 생성한다."""
+    """필요한 SQLite 테이블을 생성하고 구버전 스키마를 갱신한다."""
 
     with closing(get_db_connection()) as connection:
         with connection:
@@ -55,10 +76,14 @@ def init_database() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT NOT NULL UNIQUE,
                     hashed_password TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user'
+                        CHECK (role IN ('user', 'admin'))
                 )
                 """
             )
+
+            ensure_users_role_column(connection)
 
             connection.execute(
                 """
@@ -160,6 +185,9 @@ class ExplorePageSize(IntEnum):
 # 4. 사용자 데이터 모델
 # =========================================================
 
+UserRole = Literal["user", "admin"]
+
+
 class UserRegister(BaseModel):
     """회원가입 시 입력받는 사용자 정보"""
 
@@ -185,9 +213,16 @@ class UserRegister(BaseModel):
 
 
 class UserPublic(BaseModel):
-    """외부 응답으로 보여주는 사용자 정보"""
+    """회원가입과 로그인 응답으로 보여주는 최소 사용자 정보"""
 
     username: str
+
+
+class CurrentUserResponse(BaseModel):
+    """현재 인증된 사용자의 공개 정보"""
+
+    username: str
+    role: UserRole
 
 
 class UserInDB(BaseModel):
@@ -196,6 +231,7 @@ class UserInDB(BaseModel):
     id: int = Field(..., ge=1)
     username: str
     hashed_password: str
+    role: UserRole
 
 
 class LoginResponse(BaseModel):
@@ -361,6 +397,51 @@ class RecordExploreResponse(BaseModel):
     """검색·정렬·필터·페이지네이션이 적용된 기록 탐색 응답"""
 
     items: list[RecordResponse]
+    pagination: PaginationInfo
+
+
+HealthStatus = Literal["정상", "주의", "위험"]
+
+
+class AdminSummaryResponse(BaseModel):
+    """관리자 대시보드 상단 전체 요약"""
+
+    total_users: int = Field(..., ge=0)
+    total_records: int = Field(..., ge=0)
+    normal_count: int = Field(..., ge=0)
+    caution_count: int = Field(..., ge=0)
+    danger_count: int = Field(..., ge=0)
+
+
+class AdminUserSummary(BaseModel):
+    """관리자에게 공개하는 사용자별 기록 요약"""
+
+    id: int = Field(..., ge=1)
+    username: str
+    role: UserRole
+    created_at: dt.datetime
+    record_count: int = Field(..., ge=0)
+    latest_record_date: dt.date | None = None
+
+
+class AdminUserListResponse(BaseModel):
+    """관리자 사용자 목록 응답"""
+
+    count: int = Field(..., ge=0)
+    users: list[AdminUserSummary]
+
+
+class AdminRecordResponse(RecordResponse):
+    """관리자 기록 조회에서만 추가로 공개하는 식별·통합 상태"""
+
+    user_id: int = Field(..., ge=1)
+    health_status: HealthStatus
+
+
+class AdminRecordExploreResponse(BaseModel):
+    """관리자용 전체 또는 특정 사용자 기록 탐색 응답"""
+
+    items: list[AdminRecordResponse]
     pagination: PaginationInfo
 
 
@@ -621,7 +702,7 @@ def get_user_by_username(username: str) -> UserInDB | None:
     with closing(get_db_connection()) as connection:
         row = connection.execute(
             """
-            SELECT id, username, hashed_password
+            SELECT id, username, hashed_password, role
             FROM users
             WHERE username = ?
             """,
@@ -635,6 +716,7 @@ def get_user_by_username(username: str) -> UserInDB | None:
         id=row["id"],
         username=row["username"],
         hashed_password=row["hashed_password"],
+        role=row["role"],
     )
 
 
@@ -684,6 +766,20 @@ def get_current_user(
         )
 
     return user
+
+
+def require_admin(
+    current_user: UserInDB = Depends(get_current_user),
+) -> UserInDB:
+    """현재 사용자가 관리자인지 서버에서 다시 검증한다."""
+
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자 권한이 필요합니다.",
+        )
+
+    return current_user
 
 
 # =========================================================
@@ -857,6 +953,174 @@ def get_record_sort_key(
         record.date,
         record.id,
     )
+
+
+def classify_health_status(
+    bp_category: BloodPressureCategory,
+    sugar_category: BloodSugarCategory,
+) -> HealthStatus:
+    """혈압과 공복혈당 중 더 높은 위험도를 통합 상태로 반환한다."""
+
+    if bp_category == "고혈압" or sugar_category == "당뇨 의심":
+        return "위험"
+
+    if bp_category == "주의" or sugar_category == "공복혈당장애":
+        return "주의"
+
+    return "정상"
+
+
+def build_admin_record_response(
+    row: sqlite3.Row,
+) -> AdminRecordResponse:
+    """사용자 조인 행을 관리자용 검증 응답으로 변환한다."""
+
+    record = row_to_record_response(
+        row=row,
+        username=row["username"],
+    )
+    return AdminRecordResponse(
+        **record.model_dump(),
+        user_id=row["user_id"],
+        health_status=classify_health_status(
+            bp_category=record.bp_category,
+            sugar_category=record.sugar_category,
+        ),
+    )
+
+
+def to_public_record(
+    record: AdminRecordResponse,
+) -> RecordResponse:
+    """관리자용 내부 조회 결과에서 일반 사용자 공개 필드만 남긴다."""
+
+    return RecordResponse.model_validate(record.model_dump())
+
+
+def explore_record_data(
+    *,
+    scope_user_id: int | None,
+    start_date: dt.date | None,
+    end_date: dt.date | None,
+    sort_by: RecordSortField,
+    order: Literal["asc", "desc"],
+    bmi_category: BmiCategory | None,
+    bp_category: BloodPressureCategory | None,
+    sugar_category: BloodSugarCategory | None,
+    health_status: HealthStatus | None,
+    page: int,
+    page_size: ExplorePageSize,
+) -> tuple[list[AdminRecordResponse], PaginationInfo]:
+    """일반 사용자와 관리자가 공유하는 기록 탐색 로직."""
+
+    if (
+        start_date is not None
+        and end_date is not None
+        and start_date > end_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="시작일은 종료일보다 늦을 수 없습니다.",
+        )
+
+    query = """
+        SELECT
+            hr.id,
+            hr.user_id,
+            hr.date,
+            hr.weight,
+            hr.height,
+            hr.systolic,
+            hr.diastolic,
+            hr.blood_sugar,
+            hr.steps,
+            hr.sleep_hours,
+            hr.memo,
+            u.username
+        FROM health_records AS hr
+        JOIN users AS u ON u.id = hr.user_id
+        WHERE 1 = 1
+    """
+    parameters: list[int | str] = []
+
+    if scope_user_id is not None:
+        query += "\nAND hr.user_id = ?"
+        parameters.append(scope_user_id)
+
+    if start_date is not None:
+        query += "\nAND hr.date >= ?"
+        parameters.append(start_date.isoformat())
+
+    if end_date is not None:
+        query += "\nAND hr.date <= ?"
+        parameters.append(end_date.isoformat())
+
+    query += "\nORDER BY hr.date ASC, hr.id ASC"
+
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(query, parameters).fetchall()
+
+    filtered_records = [
+        build_admin_record_response(row)
+        for row in rows
+    ]
+
+    if bmi_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.bmi_category == bmi_category
+        ]
+
+    if bp_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.bp_category == bp_category
+        ]
+
+    if sugar_category is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.sugar_category == sugar_category
+        ]
+
+    if health_status is not None:
+        filtered_records = [
+            record
+            for record in filtered_records
+            if record.health_status == health_status
+        ]
+
+    filtered_records.sort(
+        key=lambda record: get_record_sort_key(
+            record=record,
+            sort_by=sort_by,
+        ),
+        reverse=(order == "desc"),
+    )
+
+    page_size_value = int(page_size)
+    total_items = len(filtered_records)
+    total_pages = (
+        (total_items + page_size_value - 1) // page_size_value
+        if total_items > 0
+        else 0
+    )
+    start_index = (page - 1) * page_size_value
+    end_index = start_index + page_size_value
+    page_items = filtered_records[start_index:end_index]
+
+    pagination = PaginationInfo(
+        page=page,
+        page_size=page_size_value,
+        total_items=total_items,
+        total_pages=total_pages,
+        has_previous=(page > 1 and total_pages > 0),
+        has_next=(page < total_pages),
+    )
+    return page_items, pagination
 
 
 def get_user_record_row(
@@ -1310,6 +1574,27 @@ def read_dashboard():
     return HTMLResponse(content=html_content)
 
 
+@app.get(
+    "/admin",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+def read_admin_dashboard(
+    _: UserInDB = Depends(require_admin),
+):
+    """관리자 권한 사용자에게 별도 조회 전용 화면을 반환한다."""
+
+    try:
+        html_content = ADMIN_DASHBOARD_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="관리자 대시보드 HTML 파일을 찾을 수 없습니다.",
+        ) from error
+
+    return HTMLResponse(content=html_content)
+
+
 # =========================================================
 # 9. 사용자 API
 # =========================================================
@@ -1336,14 +1621,16 @@ def register_user(user_input: UserRegister):
                     INSERT INTO users (
                         username,
                         hashed_password,
-                        created_at
+                        created_at,
+                        role
                     )
-                    VALUES (?, ?, ?)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (
                         username,
                         hashed_password,
                         created_at,
+                        "user",
                     ),
                 )
     except sqlite3.IntegrityError as error:
@@ -1376,15 +1663,16 @@ def login_user(
 
 @app.get(
     "/users/me",
-    response_model=UserPublic,
+    response_model=CurrentUserResponse,
 )
 def read_current_user(
     current_user: UserInDB = Depends(get_current_user),
 ):
     """현재 인증된 사용자의 정보를 반환한다."""
 
-    return UserPublic(
+    return CurrentUserResponse(
         username=current_user.username,
+        role=current_user.role,
     )
 
 
@@ -1580,109 +1868,22 @@ def explore_records(
 ):
     """현재 사용자의 전체 과거 기록을 조건에 따라 탐색한다."""
 
-    if (
-        start_date is not None
-        and end_date is not None
-        and start_date > end_date
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="시작일은 종료일보다 늦을 수 없습니다.",
-        )
-
-    query = """
-        SELECT
-            id,
-            user_id,
-            date,
-            weight,
-            height,
-            systolic,
-            diastolic,
-            blood_sugar,
-            steps,
-            sleep_hours,
-            memo
-        FROM health_records
-        WHERE user_id = ?
-    """
-    parameters: list[int | str] = [current_user.id]
-
-    if start_date is not None:
-        query += "\nAND date >= ?"
-        parameters.append(start_date.isoformat())
-
-    if end_date is not None:
-        query += "\nAND date <= ?"
-        parameters.append(end_date.isoformat())
-
-    # 상태 필터와 페이지네이션 전에 전체 후보를 결정적으로 조회한다.
-    query += "\nORDER BY date ASC, id ASC"
-
-    with closing(get_db_connection()) as connection:
-        rows = connection.execute(
-            query,
-            parameters,
-        ).fetchall()
-
-    filtered_records = [
-        row_to_record_response(
-            row=row,
-            username=current_user.username,
-        )
-        for row in rows
-    ]
-
-    if bmi_category is not None:
-        filtered_records = [
-            record
-            for record in filtered_records
-            if record.bmi_category == bmi_category
-        ]
-
-    if bp_category is not None:
-        filtered_records = [
-            record
-            for record in filtered_records
-            if record.bp_category == bp_category
-        ]
-
-    if sugar_category is not None:
-        filtered_records = [
-            record
-            for record in filtered_records
-            if record.sugar_category == sugar_category
-        ]
-
-    filtered_records.sort(
-        key=lambda record: get_record_sort_key(
-            record=record,
-            sort_by=sort_by,
-        ),
-        reverse=(order == "desc"),
+    admin_items, pagination = explore_record_data(
+        scope_user_id=current_user.id,
+        start_date=start_date,
+        end_date=end_date,
+        sort_by=sort_by,
+        order=order,
+        bmi_category=bmi_category,
+        bp_category=bp_category,
+        sugar_category=sugar_category,
+        health_status=None,
+        page=page,
+        page_size=page_size,
     )
-
-    page_size_value = int(page_size)
-    total_items = len(filtered_records)
-    total_pages = (
-        (total_items + page_size_value - 1) // page_size_value
-        if total_items > 0
-        else 0
-    )
-    start_index = (page - 1) * page_size_value
-    end_index = start_index + page_size_value
-    page_items = filtered_records[start_index:end_index]
-
     return RecordExploreResponse(
-        items=page_items,
-        pagination=PaginationInfo(
-            page=page,
-            page_size=page_size_value,
-            total_items=total_items,
-            total_pages=total_pages,
-            has_previous=(page > 1 and total_pages > 0),
-            has_next=(page < total_pages),
-        ),
+        items=[to_public_record(item) for item in admin_items],
+        pagination=pagination,
     )
 
 
@@ -1814,7 +2015,159 @@ def delete_record(
 
 
 # =========================================================
-# 11. 검색·통계·리포트 API
+# 11. 관리자 조회 전용 API
+# =========================================================
+
+@app.get(
+    "/admin/summary",
+    response_model=AdminSummaryResponse,
+)
+def read_admin_summary(
+    _: UserInDB = Depends(require_admin),
+):
+    """전체 사용자·기록 수와 통합 건강 상태 분포를 반환한다."""
+
+    with closing(get_db_connection()) as connection:
+        total_users = int(
+            connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        )
+        rows = connection.execute(
+            """
+            SELECT systolic, diastolic, blood_sugar
+            FROM health_records
+            """
+        ).fetchall()
+
+    counts: dict[HealthStatus, int] = {
+        "정상": 0,
+        "주의": 0,
+        "위험": 0,
+    }
+    for row in rows:
+        health_status = classify_health_status(
+            bp_category=classify_blood_pressure(
+                row["systolic"],
+                row["diastolic"],
+            ),
+            sugar_category=classify_blood_sugar(
+                row["blood_sugar"]
+            ),
+        )
+        counts[health_status] += 1
+
+    return AdminSummaryResponse(
+        total_users=total_users,
+        total_records=len(rows),
+        normal_count=counts["정상"],
+        caution_count=counts["주의"],
+        danger_count=counts["위험"],
+    )
+
+
+@app.get(
+    "/admin/users",
+    response_model=AdminUserListResponse,
+)
+def read_admin_users(
+    _: UserInDB = Depends(require_admin),
+):
+    """민감정보 없이 사용자별 기록 수와 최근 기록일을 반환한다."""
+
+    with closing(get_db_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                u.id,
+                u.username,
+                u.role,
+                u.created_at,
+                COUNT(hr.id) AS record_count,
+                MAX(hr.date) AS latest_record_date
+            FROM users AS u
+            LEFT JOIN health_records AS hr ON hr.user_id = u.id
+            GROUP BY u.id, u.username, u.role, u.created_at
+            ORDER BY u.username ASC, u.id ASC
+            """
+        ).fetchall()
+
+    users = [
+        AdminUserSummary(
+            id=row["id"],
+            username=row["username"],
+            role=row["role"],
+            created_at=dt.datetime.fromisoformat(row["created_at"]),
+            record_count=row["record_count"],
+            latest_record_date=(
+                dt.date.fromisoformat(row["latest_record_date"])
+                if row["latest_record_date"] is not None
+                else None
+            ),
+        )
+        for row in rows
+    ]
+    return AdminUserListResponse(count=len(users), users=users)
+
+
+@app.get(
+    "/admin/records/explore",
+    response_model=AdminRecordExploreResponse,
+)
+def explore_admin_records(
+    user_id: int | None = Query(
+        default=None,
+        ge=1,
+        description="특정 사용자의 ID. 생략하면 전체 사용자를 조회합니다.",
+    ),
+    start_date: dt.date | None = Query(default=None),
+    end_date: dt.date | None = Query(default=None),
+    health_status: HealthStatus | None = Query(
+        default=None,
+        description="혈압과 공복혈당을 합친 정상·주의·위험 상태",
+    ),
+    sort_by: RecordSortField = Query(default="date"),
+    order: Literal["asc", "desc"] = Query(default="desc"),
+    bmi_category: BmiCategory | None = Query(default=None),
+    bp_category: BloodPressureCategory | None = Query(default=None),
+    sugar_category: BloodSugarCategory | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: ExplorePageSize = Query(default=ExplorePageSize.TEN),
+    _: UserInDB = Depends(require_admin),
+):
+    """관리자가 전체 또는 선택한 사용자의 기록을 탐색한다."""
+
+    if user_id is not None:
+        with closing(get_db_connection()) as connection:
+            user_exists = connection.execute(
+                "SELECT 1 FROM users WHERE id = ?",
+                (user_id,),
+            ).fetchone()
+        if user_exists is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="사용자를 찾을 수 없습니다.",
+            )
+
+    items, pagination = explore_record_data(
+        scope_user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        sort_by=sort_by,
+        order=order,
+        bmi_category=bmi_category,
+        bp_category=bp_category,
+        sugar_category=sugar_category,
+        health_status=health_status,
+        page=page,
+        page_size=page_size,
+    )
+    return AdminRecordExploreResponse(
+        items=items,
+        pagination=pagination,
+    )
+
+
+# =========================================================
+# 12. 검색·통계·리포트 API
 # =========================================================
 
 @app.get(

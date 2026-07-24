@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt
 
-COPY main.py seed_year_data.py dashboard.html chart.umd.min.js ./
+COPY main.py seed_year_data.py create_admin.py dashboard.html admin.html chart.umd.min.js ./
 
 EXPOSE 8000
 

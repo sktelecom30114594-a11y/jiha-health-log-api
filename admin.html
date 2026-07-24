@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>마이 헬스 로그 관리자 대시보드</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f7fb;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --text: #172033;
+      --muted: #667085;
+      --line: #e4e9f2;
+      --primary: #2764e7;
+      --primary-dark: #194bb8;
+      --success: #117a52;
+      --warning: #a76400;
+      --danger: #c73b4b;
+      --shadow: 0 14px 35px rgba(32, 48, 78, 0.09);
+      font-family: Inter, Pretendard, "Noto Sans KR", system-ui, -apple-system,
+        BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, #e9f0ff 0, transparent 34rem),
+        var(--bg);
+      color: var(--text);
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    [hidden] { display: none !important; }
+
+    .page-shell {
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 34px 0 64px;
+    }
+    .topbar, .section-head, .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #172033, #465a82);
+      color: white;
+      font-size: 21px;
+      box-shadow: var(--shadow);
+    }
+    h1, h2 { margin: 0; letter-spacing: -0.035em; }
+    .brand p, .section-subtitle { margin: 6px 0 0; color: var(--muted); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .button {
+      min-height: 42px;
+      border: 0;
+      border-radius: 12px;
+      padding: 0 16px;
+      font-weight: 750;
+    }
+    .button.primary { background: var(--primary); color: white; }
+    .button.primary:hover { background: var(--primary-dark); }
+    .button.secondary { background: #eaf0ff; color: var(--primary-dark); }
+    .button.ghost { border: 1px solid var(--line); background: white; color: var(--text); }
+    .button:disabled { cursor: not-allowed; opacity: .48; }
+
+    .message {
+      margin-top: 18px;
+      border-radius: 12px;
+      padding: 12px 14px;
+      line-height: 1.45;
+    }
+    .message.info { background: #eef4ff; color: var(--primary-dark); border: 1px solid #d7e3ff; }
+    .message.error { background: #fff0f2; color: var(--danger); border: 1px solid #ffd3d9; }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .card {
+      border: 1px solid rgba(228, 233, 242, .95);
+      border-radius: 20px;
+      background: rgba(255,255,255,.96);
+      box-shadow: var(--shadow);
+    }
+    .summary-card { padding: 20px; min-height: 130px; }
+    .summary-label { color: var(--muted); font-size: .85rem; font-weight: 700; }
+    .summary-value { margin-top: 16px; font-size: 2rem; font-weight: 850; letter-spacing: -.04em; }
+    .summary-card.normal .summary-value { color: var(--success); }
+    .summary-card.caution .summary-value { color: var(--warning); }
+    .summary-card.danger .summary-value { color: var(--danger); }
+
+    .section-card { margin-top: 18px; padding: 24px; }
+    .section-head { align-items: flex-start; margin-bottom: 18px; }
+    .meta { color: var(--muted); font-size: .9rem; }
+    .meta strong { color: var(--text); }
+
+    .filters {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      background: var(--surface-soft);
+      margin-bottom: 18px;
+    }
+    .filters-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .field { display: grid; gap: 7px; }
+    .field label { font-size: .86rem; font-weight: 750; }
+    .field input, .field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      padding: 11px 12px;
+      color: var(--text);
+      background: white;
+      outline: none;
+    }
+    .field input:focus, .field select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(39,100,231,.12);
+    }
+    .filter-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+    table { width: 100%; min-width: 940px; border-collapse: collapse; background: white; }
+    th, td {
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      white-space: nowrap;
+      font-size: .87rem;
+    }
+    th { background: var(--surface-soft); color: var(--muted); font-size: .78rem; letter-spacing: .03em; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: #edf7f2;
+      color: var(--success);
+      font-size: .76rem;
+      font-weight: 800;
+    }
+    .badge.caution { background: #fff4e5; color: var(--warning); }
+    .badge.danger { background: #fff0f2; color: var(--danger); }
+    .badge.admin { background: #eef4ff; color: var(--primary-dark); }
+    .empty { border: 1px dashed #cdd5e3; border-radius: 14px; padding: 26px; color: var(--muted); text-align: center; }
+    .pagination { justify-content: center; margin-top: 18px; }
+    .pagination-info { min-width: 120px; text-align: center; color: var(--muted); font-weight: 700; }
+    .loading { opacity: .58; pointer-events: none; }
+
+    @media (max-width: 1020px) {
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filters-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 680px) {
+      .page-shell { width: min(100% - 22px, 1240px); padding-top: 22px; }
+      .topbar, .section-head { align-items: flex-start; flex-direction: column; }
+      .summary-grid, .filters-grid { grid-template-columns: 1fr; }
+      .section-card { padding: 19px; border-radius: 17px; }
+      .filter-actions { justify-content: stretch; }
+      .filter-actions .button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+  <main id="adminPage" class="page-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">A</div>
+        <div>
+          <h1>마이 헬스 로그 관리자</h1>
+          <p><span id="adminUsername">관리자</span> 계정 · 조회 전용 대시보드</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="refreshButton" class="button secondary" type="button">새로고침</button>
+        <button id="userDashboardButton" class="button ghost" type="button">일반 대시보드</button>
+      </div>
+    </header>
+
+    <div id="message" class="message info">관리자 데이터를 불러오는 중입니다.</div>
+
+    <section class="summary-grid" aria-label="전체 요약">
+      <article class="card summary-card">
+        <div class="summary-label">전체 사용자</div>
+        <div id="totalUsers" class="summary-value">-</div>
+      </article>
+      <article class="card summary-card">
+        <div class="summary-label">전체 건강 기록</div>
+        <div id="totalRecords" class="summary-value">-</div>
+      </article>
+      <article class="card summary-card normal">
+        <div class="summary-label">정상 기록</div>
+        <div id="normalCount" class="summary-value">-</div>
+      </article>
+      <article class="card summary-card caution">
+        <div class="summary-label">주의 기록</div>
+        <div id="cautionCount" class="summary-value">-</div>
+      </article>
+      <article class="card summary-card danger">
+        <div class="summary-label">위험 기록</div>
+        <div id="dangerCount" class="summary-value">-</div>
+      </article>
+    </section>
+
+    <section class="card section-card" aria-labelledby="usersTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="usersTitle">사용자 현황</h2>
+          <p class="section-subtitle">비밀번호 해시는 표시하지 않고 기록 건수와 최근 기록일만 제공합니다.</p>
+        </div>
+        <div class="meta">사용자 <strong id="userCount">0명</strong></div>
+      </div>
+      <div id="usersTableWrap" class="table-wrap" hidden>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>사용자명</th><th>역할</th><th>가입 시각</th><th>기록 수</th><th>최근 기록일</th></tr>
+          </thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+      <div id="usersEmpty" class="empty">사용자 데이터를 불러오는 중입니다.</div>
+    </section>
+
+    <section class="card section-card" aria-labelledby="recordsTitle">
+      <div class="section-head">
+        <div>
+          <h2 id="recordsTitle">전체 건강 기록 탐색</h2>
+          <p class="section-subtitle">전체 또는 특정 사용자의 기록을 날짜·상태·정렬 조건으로 조회합니다.</p>
+        </div>
+        <div class="meta">검색 결과 <strong id="recordCount">0건</strong></div>
+      </div>
+
+      <form id="recordsForm" class="filters">
+        <div class="filters-grid">
+          <div class="field">
+            <label for="userFilter">사용자</label>
+            <select id="userFilter" name="user_id"><option value="">전체 사용자</option></select>
+          </div>
+          <div class="field"><label for="startDate">시작일</label><input id="startDate" type="date"></div>
+          <div class="field"><label for="endDate">종료일</label><input id="endDate" type="date"></div>
+          <div class="field">
+            <label for="healthStatus">통합 건강 상태</label>
+            <select id="healthStatus"><option value="">전체</option><option value="정상">정상</option><option value="주의">주의</option><option value="위험">위험</option></select>
+          </div>
+          <div class="field">
+            <label for="bmiCategory">BMI 상태</label>
+            <select id="bmiCategory"><option value="">전체</option><option value="저체중">저체중</option><option value="정상">정상</option><option value="과체중">과체중</option><option value="비만">비만</option></select>
+          </div>
+          <div class="field">
+            <label for="bpCategory">혈압 상태</label>
+            <select id="bpCategory"><option value="">전체</option><option value="정상">정상</option><option value="주의">주의</option><option value="고혈압">고혈압</option></select>
+          </div>
+          <div class="field">
+            <label for="sugarCategory">공복혈당 상태</label>
+            <select id="sugarCategory"><option value="">전체</option><option value="정상">정상</option><option value="공복혈당장애">공복혈당장애</option><option value="당뇨 의심">당뇨 의심</option></select>
+          </div>
+          <div class="field">
+            <label for="sortBy">정렬 기준</label>
+            <select id="sortBy"><option value="date">날짜</option><option value="weight">체중</option><option value="systolic">수축기 혈압</option><option value="diastolic">이완기 혈압</option><option value="blood_sugar">공복혈당</option><option value="steps">걸음 수</option><option value="sleep_hours">수면 시간</option></select>
+          </div>
+          <div class="field">
+            <label for="sortOrder">정렬 순서</label>
+            <select id="sortOrder"><option value="desc">내림차순</option><option value="asc">오름차순</option></select>
+          </div>
+          <div class="field">
+            <label for="pageSize">페이지당 기록 수</label>
+            <select id="pageSize"><option value="10">10건</option><option value="20">20건</option><option value="50">50건</option></select>
+          </div>
+        </div>
+        <div class="filter-actions">
+          <button id="resetButton" class="button ghost" type="button">조건 초기화</button>
+          <button id="searchButton" class="button primary" type="submit">검색</button>
+        </div>
+      </form>
+
+      <div id="recordsTableWrap" class="table-wrap" hidden>
+        <table>
+          <thead>
+            <tr><th>사용자</th><th>날짜</th><th>체중</th><th>BMI</th><th>혈압</th><th>공복혈당</th><th>걸음</th><th>수면</th><th>통합 상태</th></tr>
+          </thead>
+          <tbody id="recordsBody"></tbody>
+        </table>
+      </div>
+      <div id="recordsEmpty" class="empty">건강 기록을 불러오는 중입니다.</div>
+      <nav id="pagination" class="pagination" hidden aria-label="관리자 기록 페이지 이동">
+        <button id="previousButton" class="button ghost" type="button">이전</button>
+        <span id="paginationInfo" class="pagination-info">0 / 0페이지</span>
+        <button id="nextButton" class="button ghost" type="button">다음</button>
+      </nav>
+    </section>
+  </main>
+
+  <script>
+    "use strict";
+
+    let currentPage = 1;
+    let currentPagination = null;
+    const adminPage = document.getElementById("adminPage");
+    const message = document.getElementById("message");
+    const refreshButton = document.getElementById("refreshButton");
+    const searchButton = document.getElementById("searchButton");
+    const recordsForm = document.getElementById("recordsForm");
+    const previousButton = document.getElementById("previousButton");
+    const nextButton = document.getElementById("nextButton");
+
+    function formatNumber(value, digits = 0) {
+      if (value === null || value === undefined) return "-";
+      return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: digits });
+    }
+
+    function setMessage(text = "", type = "info") {
+      message.textContent = text;
+      message.className = `message ${type}`;
+      message.hidden = !text;
+    }
+
+    async function apiFetch(url) {
+      const response = await fetch(url, { credentials: "same-origin" });
+      const contentType = response.headers.get("content-type") || "";
+      const body = contentType.includes("application/json") ? await response.json() : null;
+      if (!response.ok) {
+        throw new Error(body && body.detail ? body.detail : `요청에 실패했습니다. (${response.status})`);
+      }
+      return body;
+    }
+
+    function statusClass(status) {
+      if (status === "위험") return "badge danger";
+      if (status === "주의") return "badge caution";
+      return "badge";
+    }
+
+    function renderSummary(summary) {
+      document.getElementById("totalUsers").textContent = formatNumber(summary.total_users);
+      document.getElementById("totalRecords").textContent = formatNumber(summary.total_records);
+      document.getElementById("normalCount").textContent = formatNumber(summary.normal_count);
+      document.getElementById("cautionCount").textContent = formatNumber(summary.caution_count);
+      document.getElementById("dangerCount").textContent = formatNumber(summary.danger_count);
+    }
+
+    function renderUsers(payload) {
+      const usersBody = document.getElementById("usersBody");
+      const tableWrap = document.getElementById("usersTableWrap");
+      const empty = document.getElementById("usersEmpty");
+      const userFilter = document.getElementById("userFilter");
+      const selectedUser = userFilter.value;
+      usersBody.replaceChildren();
+      userFilter.replaceChildren(new Option("전체 사용자", ""));
+      document.getElementById("userCount").textContent = `${formatNumber(payload.count)}명`;
+
+      if (!payload.users.length) {
+        tableWrap.hidden = true;
+        empty.textContent = "등록된 사용자가 없습니다.";
+        empty.hidden = false;
+        return;
+      }
+
+      for (const user of payload.users) {
+        const option = new Option(`${user.username} (${user.record_count}건)`, String(user.id));
+        userFilter.appendChild(option);
+
+        const row = document.createElement("tr");
+        const values = [
+          user.id,
+          user.username,
+          user.role,
+          user.created_at.replace("T", " ").slice(0, 19),
+          `${formatNumber(user.record_count)}건`,
+          user.latest_record_date || "-",
+        ];
+        values.forEach((value, index) => {
+          const cell = document.createElement("td");
+          if (index === 2) {
+            const badge = document.createElement("span");
+            badge.className = user.role === "admin" ? "badge admin" : "badge";
+            badge.textContent = user.role;
+            cell.appendChild(badge);
+          } else {
+            cell.textContent = value;
+          }
+          row.appendChild(cell);
+        });
+        usersBody.appendChild(row);
+      }
+
+      if ([...userFilter.options].some((option) => option.value === selectedUser)) {
+        userFilter.value = selectedUser;
+      }
+      empty.hidden = true;
+      tableWrap.hidden = false;
+    }
+
+    function buildRecordsUrl(page) {
+      const params = new URLSearchParams();
+      const fields = {
+        user_id: document.getElementById("userFilter").value,
+        start_date: document.getElementById("startDate").value,
+        end_date: document.getElementById("endDate").value,
+        health_status: document.getElementById("healthStatus").value,
+        bmi_category: document.getElementById("bmiCategory").value,
+        bp_category: document.getElementById("bpCategory").value,
+        sugar_category: document.getElementById("sugarCategory").value,
+        sort_by: document.getElementById("sortBy").value,
+        order: document.getElementById("sortOrder").value,
+        page_size: document.getElementById("pageSize").value,
+      };
+      for (const [key, value] of Object.entries(fields)) {
+        if (value) params.set(key, value);
+      }
+      params.set("page", String(page));
+      return `/admin/records/explore?${params.toString()}`;
+    }
+
+    function renderPagination(pagination) {
+      const nav = document.getElementById("pagination");
+      currentPagination = pagination;
+      currentPage = pagination.page;
+      if (pagination.total_pages === 0) {
+        nav.hidden = true;
+        return;
+      }
+      nav.hidden = false;
+      document.getElementById("paginationInfo").textContent = `${pagination.page} / ${pagination.total_pages}페이지`;
+      previousButton.disabled = !pagination.has_previous;
+      nextButton.disabled = !pagination.has_next;
+    }
+
+    function renderRecords(payload) {
+      const rows = payload.items || [];
+      const tbody = document.getElementById("recordsBody");
+      const tableWrap = document.getElementById("recordsTableWrap");
+      const empty = document.getElementById("recordsEmpty");
+      tbody.replaceChildren();
+      document.getElementById("recordCount").textContent = `${formatNumber(payload.pagination.total_items)}건`;
+
+      if (!rows.length) {
+        tableWrap.hidden = true;
+        empty.textContent = payload.pagination.total_items === 0
+          ? "검색 조건에 맞는 건강 기록이 없습니다."
+          : "요청한 페이지에 표시할 건강 기록이 없습니다.";
+        empty.hidden = false;
+        renderPagination(payload.pagination);
+        return;
+      }
+
+      for (const record of rows) {
+        const row = document.createElement("tr");
+        const values = [
+          record.user,
+          record.date,
+          `${formatNumber(record.weight, 2)}kg`,
+          `${formatNumber(record.bmi, 2)} · ${record.bmi_category}`,
+          `${record.systolic}/${record.diastolic} · ${record.bp_category}`,
+          `${record.blood_sugar} · ${record.sugar_category}`,
+          `${formatNumber(record.steps)}보`,
+          `${formatNumber(record.sleep_hours, 2)}시간`,
+        ];
+        values.forEach((value) => {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          row.appendChild(cell);
+        });
+        const statusCell = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = statusClass(record.health_status);
+        badge.textContent = record.health_status;
+        statusCell.appendChild(badge);
+        row.appendChild(statusCell);
+        tbody.appendChild(row);
+      }
+      empty.hidden = true;
+      tableWrap.hidden = false;
+      renderPagination(payload.pagination);
+    }
+
+    async function loadRecords(page = 1) {
+      const payload = await apiFetch(buildRecordsUrl(page));
+      renderRecords(payload);
+    }
+
+    async function loadAll() {
+      adminPage.classList.add("loading");
+      refreshButton.disabled = true;
+      searchButton.disabled = true;
+      setMessage("관리자 데이터를 불러오는 중입니다.", "info");
+      try {
+        const me = await apiFetch("/users/me");
+        if (me.role !== "admin") throw new Error("관리자 권한이 필요합니다.");
+        document.getElementById("adminUsername").textContent = me.username;
+        const [summary, users] = await Promise.all([
+          apiFetch("/admin/summary"),
+          apiFetch("/admin/users"),
+        ]);
+        renderSummary(summary);
+        renderUsers(users);
+        await loadRecords(currentPage);
+        setMessage();
+      } catch (error) {
+        setMessage(error.message, "error");
+      } finally {
+        adminPage.classList.remove("loading");
+        refreshButton.disabled = false;
+        searchButton.disabled = false;
+      }
+    }
+
+    recordsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      currentPage = 1;
+      await loadAll();
+    });
+
+    document.getElementById("resetButton").addEventListener("click", async () => {
+      recordsForm.reset();
+      document.getElementById("sortBy").value = "date";
+      document.getElementById("sortOrder").value = "desc";
+      document.getElementById("pageSize").value = "10";
+      currentPage = 1;
+      await loadAll();
+    });
+
+    previousButton.addEventListener("click", async () => {
+      if (currentPagination && currentPagination.has_previous) {
+        currentPage -= 1;
+        await loadAll();
+      }
+    });
+    nextButton.addEventListener("click", async () => {
+      if (currentPagination && currentPagination.has_next) {
+        currentPage += 1;
+        await loadAll();
+      }
+    });
+    refreshButton.addEventListener("click", loadAll);
+    document.getElementById("userDashboardButton").addEventListener("click", () => {
+      window.location.href = "/dashboard";
+    });
+
+    loadAll();
+  </script>
+</body>
+</html>

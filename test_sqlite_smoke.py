@@ -2,9 +2,11 @@
 
 import importlib.util
 import os
+import sqlite3
 import sys
 import tempfile
 import types
+from contextlib import closing
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -15,6 +17,8 @@ from fastapi.testclient import TestClient
 MAIN_PATH = Path(__file__).with_name("main.py")
 CHART_JS_PATH = Path(__file__).with_name("chart.umd.min.js")
 DOCKERFILE_PATH = Path(__file__).with_name("Dockerfile")
+ADMIN_HTML_PATH = Path(__file__).with_name("admin.html")
+CREATE_ADMIN_PATH = Path(__file__).with_name("create_admin.py")
 
 
 class FakePasswordHash:
@@ -80,6 +84,233 @@ def record_payload(date: str, **overrides):
     return payload
 
 
+def load_module_from_path(module_name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"{path.name} 파일을 불러올 수 없습니다.")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def create_legacy_schema(connection: sqlite3.Connection) -> None:
+    """role 컬럼이 없던 구버전 스키마를 raw SQL로 생성한다."""
+
+    connection.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            hashed_password TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE health_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            weight REAL NOT NULL,
+            height REAL NOT NULL,
+            systolic INTEGER NOT NULL,
+            diastolic INTEGER NOT NULL,
+            blood_sugar INTEGER NOT NULL,
+            steps INTEGER NOT NULL DEFAULT 0,
+            sleep_hours REAL NOT NULL DEFAULT 0,
+            memo TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE (user_id, date)
+        );
+        """
+    )
+
+
+def run_legacy_migration_test() -> None:
+    """구버전 DB를 실제 앱으로 마이그레이션하고 인증까지 검증한다."""
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "legacy_health_log.db"
+        os.environ["HEALTH_LOG_DB_PATH"] = str(db_path)
+        original_hash = FakePasswordHash().hash("legacy123")
+        other_hash = FakePasswordHash().hash("other1234")
+
+        connection = sqlite3.connect(db_path)
+        try:
+            create_legacy_schema(connection)
+            connection.execute(
+                """
+                INSERT INTO users (id, username, hashed_password, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (7, "legacy_user", original_hash, "2026-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO users (id, username, hashed_password, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (8, "other_user", other_hash, "2026-01-02T00:00:00+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO health_records (
+                    id, user_id, date, weight, height, systolic, diastolic,
+                    blood_sugar, steps, sleep_hours, memo, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    21, 7, "2026-06-01", 60.0, 170.0, 118, 76, 92,
+                    8000, 7.0, "마이그레이션 보존 기록",
+                    "2026-06-01T00:00:00+00:00",
+                    "2026-06-01T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO health_records (
+                    id, user_id, date, weight, height, systolic, diastolic,
+                    blood_sugar, steps, sleep_hours, memo, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    22, 8, "2026-06-02", 99.0, 180.0, 170, 100, 160,
+                    100, 2.0, "다른 사용자 기록",
+                    "2026-06-02T00:00:00+00:00",
+                    "2026-06-02T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        module = load_app("health_log_app_legacy")
+        auth = ("legacy_user", "legacy123")
+
+        with TestClient(module.app) as client:
+            response = client.get("/users/me", auth=auth)
+            assert_status(response, 200, "구버전 사용자 마이그레이션 후 인증")
+            assert response.json() == {
+                "username": "legacy_user",
+                "role": "user",
+            }
+
+            response = client.get("/records", auth=auth)
+            assert_status(response, 200, "구버전 사용자 기존 기록 조회")
+            assert response.json()["count"] == 1
+            assert response.json()["records"][0]["id"] == 21
+            assert response.json()["records"][0]["memo"] == (
+                "마이그레이션 보존 기록"
+            )
+            assert response.json()["records"][0]["user"] == "legacy_user"
+
+            module.init_database()
+
+            response = client.get("/users/me", auth=auth)
+            assert_status(response, 200, "마이그레이션 재실행 후 인증")
+            response = client.get("/records", auth=auth)
+            assert_status(response, 200, "마이그레이션 재실행 후 기록 조회")
+            assert response.json()["count"] == 1
+
+        connection = sqlite3.connect(db_path)
+        try:
+            columns = connection.execute(
+                "PRAGMA table_info(users)"
+            ).fetchall()
+            role_columns = [row for row in columns if row[1] == "role"]
+            assert len(role_columns) == 1
+            role_column = role_columns[0]
+            assert role_column[3] == 1, "role 컬럼이 NOT NULL이 아닙니다."
+            assert role_column[4] in {"'user'", '"user"', "user"}
+
+            legacy_row = connection.execute(
+                """
+                SELECT id, username, hashed_password, role
+                FROM users WHERE id = 7
+                """
+            ).fetchone()
+            assert legacy_row == (7, "legacy_user", original_hash, "user")
+
+            linked_record = connection.execute(
+                "SELECT id, user_id, memo FROM health_records WHERE id = 21"
+            ).fetchone()
+            assert linked_record == (21, 7, "마이그레이션 보존 기록")
+
+            connection.execute(
+                "UPDATE users SET role = 'admin' WHERE id = 7"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        module.init_database()
+
+        connection = sqlite3.connect(db_path)
+        try:
+            assert connection.execute(
+                "SELECT role FROM users WHERE id = 7"
+            ).fetchone()[0] == "admin"
+        finally:
+            connection.close()
+
+        with TestClient(module.app) as client:
+            response = client.get("/users/me", auth=auth)
+            assert_status(response, 200, "기존 관리자 role 보존")
+            assert response.json()["role"] == "admin"
+            response = client.get("/records", auth=auth)
+            assert_status(response, 200, "관리자 role 보존 후 기존 기록 조회")
+            assert response.json()["count"] == 1
+
+
+def run_create_admin_test() -> None:
+    """관리자 생성 스크립트가 앱과 같은 DB·해시를 쓰는지 검증한다."""
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "create_admin_test.db"
+        os.environ["HEALTH_LOG_DB_PATH"] = str(db_path)
+
+        main_module = load_app("main")
+        create_admin_module = load_module_from_path(
+            "create_admin_test_module",
+            CREATE_ADMIN_PATH,
+        )
+
+        created_username = create_admin_module.create_admin_account(
+            "First_Admin",
+            "admin1234",
+        )
+        assert created_username == "first_admin"
+
+        with closing(main_module.get_db_connection()) as connection:
+            row = connection.execute(
+                """
+                SELECT username, hashed_password, role
+                FROM users WHERE username = ?
+                """,
+                ("first_admin",),
+            ).fetchone()
+        assert row is not None
+        assert row["role"] == "admin"
+        assert main_module.password_hash.verify(
+            "admin1234",
+            row["hashed_password"],
+        )
+
+        try:
+            create_admin_module.create_admin_account(
+                "FIRST_ADMIN",
+                "admin1234",
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("중복 관리자 사용자명이 차단되지 않았습니다.")
+
+
 def run_test() -> None:
     install_pwdlib_test_double()
 
@@ -123,12 +354,24 @@ def run_test() -> None:
         assert "Chart.js v4.5.1" in chart_js_header
 
         assert DOCKERFILE_PATH.is_file(), "Dockerfile이 없습니다."
+        assert ADMIN_HTML_PATH.is_file(), "admin.html이 없습니다."
+        assert CREATE_ADMIN_PATH.is_file(), "create_admin.py가 없습니다."
+
         dockerfile_text = DOCKERFILE_PATH.read_text(encoding="utf-8")
         assert (
-            "COPY main.py seed_year_data.py dashboard.html "
-            "chart.umd.min.js ./"
+            "COPY main.py seed_year_data.py create_admin.py "
+            "dashboard.html admin.html chart.umd.min.js ./"
             in dockerfile_text
         )
+
+        create_admin_text = CREATE_ADMIN_PATH.read_text(encoding="utf-8")
+        assert "getpass.getpass" in create_admin_text
+        assert '"admin"' in create_admin_text
+        assert "hashed_password" not in [
+            line.strip()
+            for line in create_admin_text.splitlines()
+            if line.strip().startswith("print(")
+        ]
 
         with TestClient(module.app) as client:
             response = client.get("/static/chart.umd.min.js")
@@ -242,6 +485,12 @@ def run_test() -> None:
                 in response.text
             )
 
+            response = client.get("/admin")
+            assert_status(response, 401, "관리자 페이지 인증 필요")
+
+            response = client.get("/admin/summary")
+            assert_status(response, 401, "관리자 API 인증 필요")
+
             alice_auth = ("Alice", "test1234")
             bob_auth = ("bob", "bobpass12")
 
@@ -284,6 +533,64 @@ def run_test() -> None:
                 },
             )
             assert_status(response, 201, "기록 탐색 사용자 가입")
+
+            response = client.get("/users/me", auth=alice_auth)
+            assert_status(response, 200, "현재 사용자 role 응답")
+            assert response.json() == {"username": "alice", "role": "user"}
+
+            role_attack_auth = ("role_attack", "attack123")
+            response = client.post(
+                "/users/register",
+                json={
+                    "username": "role_attack",
+                    "password": "attack123",
+                    "role": "admin",
+                },
+            )
+            assert_status(response, 201, "회원가입 role 주입 시도")
+            response = client.get("/users/me", auth=role_attack_auth)
+            assert_status(response, 200, "role 주입 계정 확인")
+            assert response.json()["role"] == "user"
+            response = client.get("/admin", auth=role_attack_auth)
+            assert_status(response, 403, "일반 사용자 관리자 페이지 차단")
+            response = client.get("/admin/summary", auth=role_attack_auth)
+            assert_status(response, 403, "일반 사용자 관리자 API 차단")
+
+            admin_auth = ("admin_test", "adminpass12")
+            with closing(module.get_db_connection()) as connection:
+                with connection:
+                    connection.execute(
+                        """
+                        INSERT INTO users (
+                            username, hashed_password, created_at, role
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            "admin_test",
+                            module.password_hash.hash("adminpass12"),
+                            module.utc_now_iso(),
+                            "admin",
+                        ),
+                    )
+
+            response = client.get("/users/me", auth=admin_auth)
+            assert_status(response, 200, "관리자 role 응답")
+            assert response.json() == {
+                "username": "admin_test",
+                "role": "admin",
+            }
+
+            response = client.get("/admin", auth=admin_auth)
+            assert_status(response, 200, "관리자 페이지 접근")
+            assert "마이 헬스 로그 관리자 대시보드" in response.text
+            assert 'id="userFilter"' in response.text
+            assert 'id="healthStatus"' in response.text
+            assert "/admin/summary" in response.text
+            assert "/admin/users" in response.text
+            assert "/admin/records/explore" in response.text
+            assert "수정" not in response.text
+            assert "삭제" not in response.text
 
             response = client.get(
                 "/reports/weekly",
@@ -512,6 +819,99 @@ def run_test() -> None:
                 ),
             )
             assert_status(response, 201, "탐색 사용자 격리용 기록")
+
+            response = client.get("/admin/summary", auth=admin_auth)
+            assert_status(response, 200, "관리자 전체 요약")
+            admin_summary = response.json()
+            assert admin_summary["total_users"] == 6
+            assert admin_summary["total_records"] == 15
+            assert (
+                admin_summary["normal_count"]
+                + admin_summary["caution_count"]
+                + admin_summary["danger_count"]
+            ) == admin_summary["total_records"]
+
+            response = client.get("/admin/users", auth=admin_auth)
+            assert_status(response, 200, "관리자 사용자 목록")
+            admin_users = response.json()
+            assert admin_users["count"] == 6
+            assert "hashed_password" not in response.text
+            explorer_user = next(
+                user
+                for user in admin_users["users"]
+                if user["username"] == "explorer"
+            )
+            assert explorer_user["record_count"] == 12
+            assert explorer_user["latest_record_date"] == "2026-08-12"
+            assert any(
+                user["username"] == "admin_test" and user["role"] == "admin"
+                for user in admin_users["users"]
+            )
+
+            response = client.get(
+                "/admin/records/explore",
+                auth=admin_auth,
+            )
+            assert_status(response, 200, "관리자 전체 기록 조회")
+            admin_records = response.json()
+            assert admin_records["pagination"]["total_items"] == 15
+            assert len(admin_records["items"]) == 10
+            assert "hashed_password" not in response.text
+            assert all(
+                "user_id" in item and "health_status" in item
+                for item in admin_records["items"]
+            )
+
+            response = client.get(
+                "/admin/records/explore",
+                auth=admin_auth,
+                params={
+                    "user_id": explorer_user["id"],
+                    "page_size": 20,
+                },
+            )
+            assert_status(response, 200, "관리자 특정 사용자 기록 조회")
+            assert response.json()["pagination"]["total_items"] == 12
+            assert all(
+                item["user"] == "explorer"
+                for item in response.json()["items"]
+            )
+
+            response = client.get(
+                "/admin/records/explore",
+                auth=admin_auth,
+                params={"health_status": "위험", "page_size": 50},
+            )
+            assert_status(response, 200, "관리자 통합 위험 상태 필터")
+            assert response.json()["pagination"]["total_items"] > 0
+            assert all(
+                item["health_status"] == "위험"
+                for item in response.json()["items"]
+            )
+
+            response = client.get(
+                "/admin/records/explore",
+                auth=admin_auth,
+                params={
+                    "user_id": explorer_user["id"],
+                    "start_date": "2026-08-10",
+                    "end_date": "2026-08-12",
+                    "sort_by": "steps",
+                    "order": "asc",
+                    "page_size": 20,
+                },
+            )
+            assert_status(response, 200, "관리자 검색·정렬·날짜 필터")
+            assert [
+                item["steps"] for item in response.json()["items"]
+            ] == [10000, 11000, 12000]
+
+            response = client.get(
+                "/admin/records/explore",
+                auth=admin_auth,
+                params={"user_id": 999999},
+            )
+            assert_status(response, 404, "관리자 존재하지 않는 사용자 필터")
 
             response = client.get("/reports/trends")
             assert_status(response, 401, "변화 그래프 인증 필요")
@@ -1194,6 +1594,9 @@ def run_test() -> None:
             assert foreign_keys, "외래키가 정의되지 않았습니다."
         finally:
             connection.close()
+
+    run_legacy_migration_test()
+    run_create_admin_test()
 
     print("SQLite 스모크 테스트: 모든 항목 통과")
 
